@@ -1,10 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 
-# CMake 4.0+ removed support for policies < 3.5. 
-# This forces compatibility for older dependencies like Raylib.
+# Fix for CMake 4.0+ compatibility with older dependencies like Raylib 5.0
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
-project(Obscura VERSION 1.0.0 LANGUAGES CXX)
+project(Obscura VERSION 1.0.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,7 +15,6 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/raysan5/raylib.git
     GIT_TAG 5.0
 )
-# Prevent Raylib from building its own examples/tests
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(raylib)
@@ -31,7 +29,7 @@ if(APPLE)
     target_link_libraries(Obscura PRIVATE "-framework IOKit" "-framework Cocoa" "-framework GLUT")
 endif()
 
-# 3. ZERO-ERROR GUARANTEE: Apply strict warnings ONLY to our code, NOT dependencies!
+# 3. ZERO-ERROR GUARANTEE: Apply strict warnings ONLY to our code
 if(MSVC)
     target_compile_options(Obscura PRIVATE /W4 /WX)
 else()

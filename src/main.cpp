@@ -3,11 +3,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
-// 1. Suppress macro redefinition warning (C4005) for the Windows headers block
 #pragma warning(push)
 #pragma warning(disable: 4005)
 
-// 2. Mask Windows API functions/structs that conflict with Raylib
 #define Rectangle Rectangle_Win32
 #define CloseWindow CloseWindow_Win32
 #define ShowCursor ShowCursor_Win32
@@ -20,7 +18,6 @@
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 
-// 3. Restore warnings and unmask the names for Raylib
 #pragma warning(pop)
 
 #undef Rectangle
@@ -56,15 +53,9 @@
 #include <sstream>
 #include <cctype>
 
-// ==========================================
-// CONFIGURATION
-// ==========================================
 const char* SERVER_IP = "obscura-server-12ot.onrender.com"; 
 const int SERVER_PORT = 80;
 
-// ==========================================
-// NETWORK MANAGER (TCP Relay)
-// ==========================================
 class NetworkManager {
 public:
     SOCKET sock = INVALID_SOCKET;
@@ -132,9 +123,6 @@ public:
     }
 };
 
-// ==========================================
-// GAME CONSTANTS & STRUCTS
-// ==========================================
 const int SCREEN_WIDTH = 1280;
 const int SCREEN_HEIGHT = 720;
 const int TILE_SIZE = 40;
@@ -189,9 +177,6 @@ struct GameMap {
     }
 };
 
-// ==========================================
-// HELPER FUNCTIONS
-// ==========================================
 bool CheckCollision(const Player& p, const GameMap& m, Vector2 newPos) {
     float offsets[] = {-p.radius, p.radius};
     for (float ox : offsets) {
@@ -222,9 +207,6 @@ std::string GenerateRoomCode() {
     return code;
 }
 
-// ==========================================
-// MAIN GAME
-// ==========================================
 int main() {
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Obscura - Online 1v1 Hide & Seek");
     SetTargetFPS(60);
@@ -247,17 +229,32 @@ int main() {
         std::vector<std::string> messages;
         net.ProcessMessages(messages);
 
+        // Process Server Messages
         for (const std::string& msg : messages) {
-            if (msg == "PLAYER_JOINED") {
-                net.myRole = std::rand() % 2;
+            if (msg.substr(0, 5) == "ROLE:") {
+                net.myRole = std::stoi(msg.substr(5));
+            }
+            else if (msg.substr(0, 6) == "TIMER:") {
+                lobbyTimer = std::stoi(msg.substr(6));
                 phaseTimer = static_cast<float>(lobbyTimer);
+            }
+            else if (msg == "START") {
                 map.Generate();
                 state = GameState::ROLE_REVEAL;
                 revealTimer = 3.0f;
-            } else if (msg == "HOST_DISCONNECTED" || msg == "CLIENT_DISCONNECTED") {
+            }
+            else if (msg.substr(0, 6) == "ERROR:") {
+                statusMessage = "Error: " + msg.substr(6);
+                // Return to previous setup screen on error
+                if (state == GameState::WAITING_ROOM) {
+                    state = (net.isHost) ? GameState::HOST_SETUP : GameState::JOIN_SETUP;
+                }
+            }
+            else if (msg == "HOST_DISCONNECTED" || msg == "CLIENT_DISCONNECTED") {
                 statusMessage = "Opponent disconnected!";
                 state = GameState::MAIN_HUB;
-            } else if (msg.substr(0, 5) == "DATA:") {
+            }
+            else if (msg.substr(0, 5) == "DATA:") {
                 std::string data = msg.substr(5);
                 size_t xPos = data.find("\"x\":");
                 size_t yPos = data.find("\"y\":");
@@ -323,7 +320,7 @@ int main() {
             Vector2 mouse = GetMousePosition();
             if (mouse.x > SCREEN_WIDTH/2 - 100 && mouse.x < SCREEN_WIDTH/2 + 100 && 
                 mouse.y > 400 && mouse.y < 450 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                net.Send("HOST:" + hostRoomCode + "\n");
+                net.Send("HOST:" + hostRoomCode + ":" + std::to_string(lobbyTimer) + "\n");
                 state = GameState::WAITING_ROOM;
                 statusMessage = "Waiting for player to join code...";
             }

@@ -3,27 +3,27 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
-// 1. Mask Windows API macros BEFORE including Windows headers
-#define Rectangle Rectangle_Win32
-#define CloseWindow CloseWindow_Win32
-#define ShowCursor ShowCursor_Win32
-#define DrawText DrawText_Win32
-#define DrawTextEx DrawTextEx_Win32
-#define LoadImage LoadImage_Win32
-#define PlaySound PlaySound_Win32
-
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 
-// 2. Unmask them so Raylib can define them cleanly
+// FIX: Undefine Windows macros AFTER including Windows headers, 
+// but BEFORE including raylib.h. This prevents redefinition warnings.
+#undef DrawText
+#undef DrawTextA
+#undef DrawTextW
+#undef DrawTextEx
+#undef DrawTextExA
+#undef DrawTextExW
+#undef LoadImage
+#undef LoadImageA
+#undef LoadImageW
 #undef Rectangle
 #undef CloseWindow
 #undef ShowCursor
-#undef DrawText
-#undef DrawTextEx
-#undef LoadImage
 #undef PlaySound
+#undef PlaySoundA
+#undef PlaySoundW
 
 #define SOCK_CLOSE closesocket
 #else
@@ -48,7 +48,7 @@
 #include <random>
 #include <cstring>
 #include <sstream>
-#include <cctype> // Required for std::toupper
+#include <cctype>
 
 // ==========================================
 // CONFIGURATION

@@ -1,20 +1,13 @@
-#include "raylib.h"
-#include <vector>
-#include <string>
-#include <cmath>
-#include <algorithm>
-#include <random>
-#include <cstring>
-#include <cstdlib>
-
 #ifdef _WIN32
+#define _CRT_SECURE_NO_WARNINGS
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
-// FIX: Undefine Windows macros that conflict with Raylib functions
-#undef DrawText
 #undef CloseWindow
 #undef ShowCursor
+#undef DrawText
 #define SOCK_CLOSE closesocket
 #else
 #include <sys/socket.h>
@@ -27,14 +20,22 @@
 #define SOCKET_ERROR -1
 #endif
 
+#include "raylib.h"
+#include <vector>
+#include <string>
+#include <cmath>
+#include <algorithm>
+#include <random>
+#include <cstring>
+
 const int NETWORK_PORT = 54000;
 
 struct NetworkPacket {
-    int type; // 0: Ping, 1: JoinReq, 2: JoinAccept, 4: PlayerMove
+    int type;
     char name[32];
     int timer;
     char pin[5];
-    int role; // 0: Hider, 1: Hunter
+    int role;
     float posX, posY;
 };
 
@@ -55,7 +56,7 @@ public:
         int broadcast = 1, reuse = 1;
         setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (const char*)&broadcast, sizeof(broadcast));
         setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
-        sockaddr_in addr;
+        sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = INADDR_ANY;
         addr.sin_port = htons(NETWORK_PORT);
@@ -64,7 +65,7 @@ public:
     }
 
     void SendTo(const char* ip, NetworkPacket& pkt) {
-        sockaddr_in dest;
+        sockaddr_in dest{};
         dest.sin_family = AF_INET;
         dest.sin_port = htons(NETWORK_PORT);
         inet_pton(AF_INET, ip, &dest.sin_addr);
@@ -74,7 +75,7 @@ public:
     void Broadcast(NetworkPacket& pkt) { SendTo("255.255.255.255", pkt); }
 
     bool Receive(NetworkPacket& pkt) {
-        sockaddr_in src;
+        sockaddr_in src{};
         socklen_t srcLen = sizeof(src);
         return recvfrom(sock, (char*)&pkt, sizeof(pkt), 0, (sockaddr*)&src, &srcLen) > 0;
     }
@@ -130,7 +131,11 @@ struct GameMap {
 
 bool CheckCollision(const Player& p, const GameMap& m, Vector2 newPos) {
     float offsets[] = {-p.radius, p.radius};
-    for (float ox : offsets) for (float oy : offsets) if (m.IsWall(newPos.x + ox, newPos.y + oy)) return true;
+    for (float ox : offsets) {
+        for (float oy : offsets) {
+            if (m.IsWall(newPos.x + ox, newPos.y + oy)) return true;
+        }
+    }
     return false;
 }
 
@@ -144,7 +149,6 @@ std::string GetTextInput(int maxLength) {
     std::string result = "";
     int key = GetCharPressed();
     while (key > 0) {
-        // FIX: static_cast to prevent sign-compare warning on Linux
         if ((key >= 32) && (key <= 125) && (result.length() < static_cast<size_t>(maxLength))) {
             result += (char)key;
         }
@@ -232,9 +236,12 @@ int main() {
             if (!ipIn.empty()) pinInput += ipIn;
             if (IsKeyPressed(KEY_BACKSPACE) && !pinInput.empty()) pinInput.pop_back();
             if (IsKeyPressed(KEY_ENTER) && !pinInput.empty()) {
-                NetworkPacket joinPkt; joinPkt.type = 1; strcpy(joinPkt.name, net.myName.c_str());
+                NetworkPacket joinPkt; 
+                joinPkt.type = 1; 
+                strncpy(joinPkt.name, net.myName.c_str(), sizeof(joinPkt.name) - 1);
                 net.SendTo(pinInput.c_str(), joinPkt);
-                statusMessage = "Join request sent..."; state = GameState::WAITING_ROOM;
+                statusMessage = "Join request sent..."; 
+                state = GameState::WAITING_ROOM;
             }
             if (IsKeyPressed(KEY_ESCAPE)) state = GameState::MAIN_HUB;
         }
@@ -244,14 +251,24 @@ int main() {
             if (net.isHost && gotPacket && pkt.type == 1) {
                 if (strcmp(pkt.name, net.myName.c_str()) == 0) statusMessage = "Error: Name already taken!";
                 else {
-                    NetworkPacket acceptPkt; acceptPkt.type = 2; acceptPkt.role = std::rand() % 2; acceptPkt.timer = lobbyTimer;
-                    net.SendTo("127.0.0.1", acceptPkt); // Simplified for local test
+                    NetworkPacket acceptPkt; 
+                    acceptPkt.type = 2; 
+                    acceptPkt.role = std::rand() % 2; 
+                    acceptPkt.timer = lobbyTimer;
+                    net.SendTo("127.0.0.1", acceptPkt);
                     net.myRole = 1 - acceptPkt.role;
-                    phaseTimer = lobbyTimer; map.Generate(); state = GameState::ROLE_REVEAL; revealTimer = 3.0f;
+                    phaseTimer = static_cast<float>(lobbyTimer); 
+                    map.Generate(); 
+                    state = GameState::ROLE_REVEAL; 
+                    revealTimer = 3.0f;
                 }
             }
             if (!net.isHost && gotPacket && pkt.type == 2) {
-                net.myRole = pkt.role; phaseTimer = pkt.timer; map.Generate(); state = GameState::ROLE_REVEAL; revealTimer = 3.0f;
+                net.myRole = pkt.role; 
+                phaseTimer = static_cast<float>(pkt.timer); 
+                map.Generate(); 
+                state = GameState::ROLE_REVEAL; 
+                revealTimer = 3.0f;
             }
             if (IsKeyPressed(KEY_ESCAPE)) state = GameState::MAIN_HUB;
         }
@@ -269,15 +286,29 @@ int main() {
         else if (state == GameState::HIDING_PHASE || state == GameState::SEEKING_PHASE) {
             phaseTimer -= dt;
             Vector2 move = {0, 0};
-            if (IsKeyDown(KEY_W)) move.y -= 1; if (IsKeyDown(KEY_S)) move.y += 1;
-            if (IsKeyDown(KEY_A)) move.x -= 1; if (IsKeyDown(KEY_D)) move.x += 1;
+            
+            // FIX: Each if statement on its own line to satisfy Linux -Werror=misleading-indentation
+            if (IsKeyDown(KEY_W)) move.y -= 1;
+            if (IsKeyDown(KEY_S)) move.y += 1;
+            if (IsKeyDown(KEY_A)) move.x -= 1;
+            if (IsKeyDown(KEY_D)) move.x += 1;
+            
             if ((IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_E)) && localPlayer.cheatCooldown <= 0) {
-                localPlayer.cheatActive = true; localPlayer.isVisible = false; localPlayer.speed = 350.0f; localPlayer.cheatCooldown = 8.0f;
+                localPlayer.cheatActive = true; 
+                localPlayer.isVisible = false; 
+                localPlayer.speed = 350.0f; 
+                localPlayer.cheatCooldown = 8.0f;
             }
             if (localPlayer.cheatActive) {
                 localPlayer.cheatCooldown -= dt;
-                if (localPlayer.cheatCooldown <= 5.0f) { localPlayer.cheatActive = false; localPlayer.isVisible = true; localPlayer.speed = 200.0f; }
-            } else if (localPlayer.cheatCooldown > 0) { localPlayer.cheatCooldown -= dt; }
+                if (localPlayer.cheatCooldown <= 5.0f) { 
+                    localPlayer.cheatActive = false; 
+                    localPlayer.isVisible = true; 
+                    localPlayer.speed = 200.0f; 
+                }
+            } else if (localPlayer.cheatCooldown > 0) { 
+                localPlayer.cheatCooldown -= dt; 
+            }
             
             if (move.x != 0 || move.y != 0) {
                 float len = sqrtf(move.x * move.x + move.y * move.y);
@@ -289,7 +320,10 @@ int main() {
             if (gotPacket && pkt.type == 4) {
                 opponentPlayer.position = {pkt.posX, pkt.posY};
             }
-            NetworkPacket movePkt; movePkt.type = 4; movePkt.posX = localPlayer.position.x; movePkt.posY = localPlayer.position.y;
+            NetworkPacket movePkt; 
+            movePkt.type = 4; 
+            movePkt.posX = localPlayer.position.x; 
+            movePkt.posY = localPlayer.position.y;
             net.Broadcast(movePkt);
             
             if (state == GameState::SEEKING_PHASE) {

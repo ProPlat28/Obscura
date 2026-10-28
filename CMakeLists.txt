@@ -34,10 +34,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(cpphttplib)
 
-# Create an interface library to use cpp-httplib as a header-only library
-add_library(httplib INTERFACE)
-target_include_directories(httplib INTERFACE ${cpphttplib_SOURCE_DIR})
-
 # ==========================================
 # 2. Define Executable and Link Libraries
 # ==========================================
@@ -45,7 +41,14 @@ file(GLOB_RECURSE SOURCES src/*.cpp src/*.h)
 add_executable(Obscura ${SOURCES})
 
 target_include_directories(Obscura PRIVATE src)
-target_link_libraries(Obscura PRIVATE raylib httplib)
+target_link_libraries(Obscura PRIVATE raylib)
+
+# Link cpp-httplib (it's header-only, so we just need to include it)
+if(TARGET httplib::httplib)
+    target_link_libraries(Obscura PRIVATE httplib::httplib)
+else()
+    target_include_directories(Obscura PRIVATE ${cpphttplib_SOURCE_DIR})
+endif()
 
 # ==========================================
 # 3. NETWORK & THREADING SUPPORT (Cross-Platform)

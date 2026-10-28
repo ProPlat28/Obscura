@@ -17,11 +17,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Configure CMake (Visual Studio 17 2022)
-        run: cmake -B build -G "Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=Release
+      - name: Configure CMake
+        # Removed -G "Visual Studio 17 2022" to let CMake auto-detect the runner's default VS version
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build Project (Zero-Error Check)
-        # /WX flag in CMakeLists.txt ensures any warning fails the build
         run: cmake --build build --config Release
 
       - name: Upload Windows Artifact
@@ -53,7 +53,6 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build Project (Zero-Error Check)
-        # -Werror flag in CMakeLists.txt ensures any warning fails the build
         run: cmake --build build --config Release -j$(nproc)
 
       - name: Upload Linux Artifact

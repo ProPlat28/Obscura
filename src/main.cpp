@@ -2,18 +2,31 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+
+// FIX: Mask Windows API functions that conflict with Raylib
+#define CloseWindow CloseWindow_Win32
+#define ShowCursor ShowCursor_Win32
+#define DrawText DrawText_Win32
+#define Rectangle Rectangle_Win32
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
+
+// Unmask them so Raylib can use the original names
 #undef CloseWindow
 #undef ShowCursor
 #undef DrawText
+#undef Rectangle
+
 #define SOCK_CLOSE closesocket
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #define SOCK_CLOSE close
 #define SOCKET int
 #define INVALID_SOCKET -1
@@ -53,9 +66,20 @@ public:
 #endif
         sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (sock == INVALID_SOCKET) return false;
+        
         int broadcast = 1, reuse = 1;
         setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (const char*)&broadcast, sizeof(broadcast));
         setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+        
+        // FIX: Set socket to NON-BLOCKING to prevent the game loop from freezing
+#ifdef _WIN32
+        u_long mode = 1;
+        ioctlsocket(sock, FIONBIO, &mode);
+#else
+        int flags = fcntl(sock, F_GETFL, 0);
+        fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+#endif
+
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = INADDR_ANY;
@@ -77,7 +101,9 @@ public:
     bool Receive(NetworkPacket& pkt) {
         sockaddr_in src{};
         socklen_t srcLen = sizeof(src);
-        return recvfrom(sock, (char*)&pkt, sizeof(pkt), 0, (sockaddr*)&src, &srcLen) > 0;
+        int bytes = recvfrom(sock, (char*)&pkt, sizeof(pkt), 0, (sockaddr*)&src, &srcLen);
+        // If bytes > 0, we got a packet. If non-blocking and empty, it returns -1.
+        return bytes > 0;
     }
 
     void Close() {
@@ -287,7 +313,6 @@ int main() {
             phaseTimer -= dt;
             Vector2 move = {0, 0};
             
-            // FIX: Each if statement on its own line to satisfy Linux -Werror=misleading-indentation
             if (IsKeyDown(KEY_W)) move.y -= 1;
             if (IsKeyDown(KEY_S)) move.y += 1;
             if (IsKeyDown(KEY_A)) move.x -= 1;

@@ -1,3 +1,6 @@
+// MUST be defined before including httplib.h to enable HTTPS
+#define CPPHTTPLIB_OPENSSL_SUPPORT 
+
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
@@ -46,29 +49,33 @@
 #include <chrono>
 
 const char* SERVER_IP = "obscura-server-12ot.onrender.com"; 
-const int SERVER_PORT = 80;
+// Port 443 is the standard port for HTTPS
+const int SERVER_PORT = 443; 
 
 class NetworkManager {
 public:
-    std::unique_ptr<httplib::Client> cli;
+    // Changed to SSLClient for HTTPS
+    std::unique_ptr<httplib::SSLClient> cli;
     std::thread netThread;
     std::mutex mtx;
     std::queue<std::string> msgQueue;
     
     bool isHost = false;
     std::string roomCode = "";
-    std::string role = ""; // "host" or "client"
-    int myRole = -1;       // 0: Hider, 1: Hunter
+    std::string role = ""; 
+    int myRole = -1;       
     std::string myName = "";
     bool running = false;
 
     void Init() {
-        cli = std::make_unique<httplib::Client>(SERVER_IP, SERVER_PORT);
-        cli->set_connection_timeout(10, 0); 
-        cli->set_read_timeout(60, 0); 
+        // Initialize SSL Client
+        cli = std::make_unique<httplib::SSLClient>(SERVER_IP, SERVER_PORT);
         
-        // FIX: Tell the client to follow Render's HTTP -> HTTPS redirect
-        cli->set_follow_location(true); 
+        // Disable strict certificate verification for free Render certs to prevent connection drops
+        cli->enable_server_certificate_verification(false); 
+        
+        cli->set_connection_timeout(15, 0); 
+        cli->set_read_timeout(60, 0); 
         
         running = true;
         netThread = std::thread(&NetworkManager::NetworkLoop, this);

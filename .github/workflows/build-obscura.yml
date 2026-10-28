@@ -13,14 +13,24 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        
+      # Install OpenSSL for Windows using vcpkg
+      - name: Install OpenSSL (Windows)
+        run: |
+          C:\vcpkg\vcpkg.exe install openssl:x64-windows
+          C:\vcpkg\vcpkg.exe integrate install
+
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        # Use vcpkg toolchain to find OpenSSL
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake
+        
       - name: Build Project
         run: cmake --build build --config Release
+        
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Obscura (Windows)
+          name: Windows
           path: build/Release/Obscura.exe
           retention-days: 14
 
@@ -30,48 +40,27 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-      - name: Install Linux Dependencies
+        
+      - name: Install Linux Dependencies (including OpenSSL)
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git cmake \
+          sudo apt-get install -y build-essential git cmake libssl-dev \
             libx11-dev xorg-dev libgl1-mesa-dev \
             libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev \
             libasound2-dev
+            
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        
       - name: Build Project
         run: cmake --build build --config Release -j$(nproc)
-      
-      # Explicitly grant execute permissions to the binary
+        
       - name: Set Execute Permissions
         run: chmod +x build/Obscura
 
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Obscura (Linux)
-          path: build/Obscura
-          retention-days: 14
-
-  build-macos:
-    name: MacOS
-    runs-on: macos-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-      
-      - name: Install Dependencies
-        run: brew install cmake
-
-      - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build Project
-        run: cmake --build build --config Release -j$(sysctl -n hw.ncpu)
-
-      - name: Upload macOS Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Obscura (MacOS)
+          name: Linux
           path: build/Obscura
           retention-days: 14

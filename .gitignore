@@ -1,0 +1,18 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# IDE files
+.vs/
+.idea/
+*.swp
+*.swo
+
+# Compiled binaries
+*.exe
+*.o
+*.obj
+*.dll
+*.dylib
+*.so

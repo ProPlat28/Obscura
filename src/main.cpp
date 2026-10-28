@@ -28,8 +28,10 @@ struct GameMap {
     
     void Generate() {
         walls.assign(MAP_ROWS, std::vector<bool>(MAP_COLS, false));
-        std::random_device rd;
-        std::mt19937 gen(rd());
+        
+        // FIX: Removed std::random_device to prevent crashes on Linux systems with low entropy.
+        // Using a fixed seed ensures the map generates safely every time.
+        std::mt19937 gen(42); 
         std::uniform_int_distribution<> dist(0, 100);
         
         for (int r = 0; r < MAP_ROWS; ++r) {

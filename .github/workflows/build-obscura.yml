@@ -1,4 +1,4 @@
-name: Obscura Zero-Error CI/CD
+name: Obscura CI/CD
 
 on:
   push:
@@ -7,41 +7,39 @@ on:
     branches: [ "main", "master" ]
 
 jobs:
-  build-windows:
+  Windows:
     name: Windows
     runs-on: windows-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         
-      # Install OpenSSL for Windows using vcpkg
-      - name: Install OpenSSL (Windows)
+      - name: Install OpenSSL
         run: |
           C:\vcpkg\vcpkg.exe install openssl:x64-windows
           C:\vcpkg\vcpkg.exe integrate install
 
       - name: Configure CMake
-        # Use vcpkg toolchain to find OpenSSL
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake
         
       - name: Build Project
         run: cmake --build build --config Release
         
-      - name: Upload Windows Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Windows
+          name: Obscura-Windows
           path: build/Release/Obscura.exe
           retention-days: 14
 
-  build-linux:
+  Linux:
     name: Linux
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         
-      - name: Install Linux Dependencies (including OpenSSL)
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential git cmake libssl-dev \
@@ -58,9 +56,32 @@ jobs:
       - name: Set Execute Permissions
         run: chmod +x build/Obscura
 
-      - name: Upload Linux Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Linux
+          name: Obscura-Linux
+          path: build/Obscura
+          retention-days: 14
+
+  macOS:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        
+      - name: Install Dependencies
+        run: brew install cmake openssl
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR=$(brew --prefix openssl)
+
+      - name: Build Project
+        run: cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Obscura-macOS
           path: build/Obscura
           retention-days: 14

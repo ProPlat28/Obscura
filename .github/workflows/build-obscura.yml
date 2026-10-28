@@ -7,6 +7,9 @@ on:
     branches: [ "main", "master" ]
 
 jobs:
+  # ==========================================
+  # WINDOWS BUILD (MSVC)
+  # ==========================================
   build-windows:
     name: Build Windows (.exe)
     runs-on: windows-latest
@@ -15,7 +18,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        # FIX: Removed -DCMAKE_POLICY_VERSION_MINIMUM to prevent PowerShell from parsing "3.5" as a file path.
+        # The policy is now handled safely inside CMakeLists.txt.
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build Project
         run: cmake --build build --config Release
@@ -27,9 +32,14 @@ jobs:
           path: build/Release/Obscura.exe
           retention-days: 14
 
+  # ==========================================
+  # LINUX BUILD (GCC)
+  # ==========================================
   build-linux:
     name: Build Linux (Binary)
-    runs-on: ubuntu-latest
+    # FIX: Changed from ubuntu-latest (24.04) to ubuntu-22.04. 
+    # This prevents the binary from requiring newer glibc/libstdc++ than your local PC has.
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4

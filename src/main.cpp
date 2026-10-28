@@ -1,6 +1,3 @@
-// MUST be defined before including httplib.h to enable HTTPS
-#define CPPHTTPLIB_OPENSSL_SUPPORT 
-
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN

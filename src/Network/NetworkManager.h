@@ -3,6 +3,9 @@
 #include <atomic>
 #include <queue>
 #include <mutex>
+#include <string>
+#include <vector>
+#include <cstdint>
 
 namespace obscura::network {
     class NetworkManager {
@@ -10,8 +13,9 @@ namespace obscura::network {
         NetworkManager() : m_isRunning(false) {}
         ~NetworkManager() { m_isRunning = false; }
 
-        bool Host(uint16_t port) { return true; }
-        bool Join(const std::string& ip, uint16_t port) { return true; }
+        // Parameter names are commented out to prevent -Werror=unused-parameter
+        bool Host(uint16_t /*port*/) { return true; }
+        bool Join(const std::string& /*ip*/, uint16_t /*port*/) { return true; }
 
     private:
         std::jthread m_receiveThread;

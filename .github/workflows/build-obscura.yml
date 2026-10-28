@@ -18,8 +18,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure CMake
-        # Added -DCMAKE_POLICY_VERSION_MINIMUM=3.5 to bypass Raylib's older CMake syntax on new runners
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        # Clean configure step. Policy minimum is now handled in CMakeLists.txt
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build Project (Zero-Error Check)
         run: cmake --build build --config Release

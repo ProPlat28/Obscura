@@ -3,27 +3,33 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
+// 1. Suppress macro redefinition warning (C4005) for the Windows headers block
+#pragma warning(push)
+#pragma warning(disable: 4005)
+
+// 2. Mask Windows API functions/structs that conflict with Raylib
+#define Rectangle Rectangle_Win32
+#define CloseWindow CloseWindow_Win32
+#define ShowCursor ShowCursor_Win32
+#define DrawText DrawText_Win32
+#define DrawTextEx DrawTextEx_Win32
+#define LoadImage LoadImage_Win32
+#define PlaySound PlaySound_Win32
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 
-// FIX: Undefine Windows macros AFTER including Windows headers, 
-// but BEFORE including raylib.h. This prevents redefinition warnings.
-#undef DrawText
-#undef DrawTextA
-#undef DrawTextW
-#undef DrawTextEx
-#undef DrawTextExA
-#undef DrawTextExW
-#undef LoadImage
-#undef LoadImageA
-#undef LoadImageW
+// 3. Restore warnings and unmask the names for Raylib
+#pragma warning(pop)
+
 #undef Rectangle
 #undef CloseWindow
 #undef ShowCursor
+#undef DrawText
+#undef DrawTextEx
+#undef LoadImage
 #undef PlaySound
-#undef PlaySoundA
-#undef PlaySoundW
 
 #define SOCK_CLOSE closesocket
 #else
@@ -330,7 +336,6 @@ int main() {
             DrawText("Enter 4-Letter Room Code:", SCREEN_WIDTH/2 - 150, 220, 20, WHITE);
             
             std::string input = GetTextInput(4);
-            // FIX: static_cast to satisfy MSVC /W4 warning
             for (char& c : input) {
                 c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             }

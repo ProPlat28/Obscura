@@ -1,6 +1,6 @@
 # Obscura
 
-A fast-paced, online 1v1 Hide and Seek game built in high-performance C++, running natively on both Windows and Linux.
+A fast-paced, online 1v1 Hide and Seek game built in high-performance C++, running natively Windows, Linux and MacOS.
 
 ## 🎮 Game Overview
 In **Obscura**, one player takes on the role of the **Hunter** and the other is the **Hider**. Every match takes place in a large, randomly generated map, ensuring no two games are exactly the same. Built from the ground up in C++, the game guarantees smooth frame rates and precise, responsive controls.

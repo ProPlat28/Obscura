@@ -70,7 +70,6 @@ bool CheckCollisionWithWalls(const Player& player, const GameMap& map, Vector2 n
     return false;
 }
 
-// FIX: Rewritten to use float math exclusively to prevent MSVC C4244 warning
 float Distance(const Player& a, const Player& b) {
     float dx = a.position.x - b.position.x;
     float dy = a.position.y - b.position.y;
@@ -198,9 +197,12 @@ int main() {
         BeginDrawing();
         ClearBackground(BLACK);
         
-        for (int r = 0; r < MAP_ROWS; ++r) {
-            for (int c = 0; c < MAP_COLS; ++c) {
-                if (map.walls[r][c]) DrawRectangle(c * TILE_SIZE, r * TILE_SIZE, TILE_SIZE, TILE_SIZE, DARKGRAY);
+        // FIX: Only draw the map if it has actually been generated!
+        if (!map.walls.empty()) {
+            for (int r = 0; r < MAP_ROWS; ++r) {
+                for (int c = 0; c < MAP_COLS; ++c) {
+                    if (map.walls[r][c]) DrawRectangle(c * TILE_SIZE, r * TILE_SIZE, TILE_SIZE, TILE_SIZE, DARKGRAY);
+                }
             }
         }
         

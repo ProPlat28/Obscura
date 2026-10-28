@@ -28,9 +28,6 @@ struct GameMap {
     
     void Generate() {
         walls.assign(MAP_ROWS, std::vector<bool>(MAP_COLS, false));
-        
-        // FIX: Removed std::random_device to prevent crashes on Linux systems with low entropy.
-        // Using a fixed seed ensures the map generates safely every time.
         std::mt19937 gen(42); 
         std::uniform_int_distribution<> dist(0, 100);
         
@@ -73,8 +70,11 @@ bool CheckCollisionWithWalls(const Player& player, const GameMap& map, Vector2 n
     return false;
 }
 
+// FIX: Rewritten to use float math exclusively to prevent MSVC C4244 warning
 float Distance(const Player& a, const Player& b) {
-    return std::sqrt(std::pow(a.position.x - b.position.x, 2) + std::pow(a.position.y - b.position.y, 2));
+    float dx = a.position.x - b.position.x;
+    float dy = a.position.y - b.position.y;
+    return sqrtf(dx * dx + dy * dy);
 }
 
 int main() {
@@ -140,7 +140,7 @@ int main() {
             }
             
             if (hiderMove.x != 0 || hiderMove.y != 0) {
-                float len = std::sqrt(hiderMove.x * hiderMove.x + hiderMove.y * hiderMove.y);
+                float len = sqrtf(hiderMove.x * hiderMove.x + hiderMove.y * hiderMove.y);
                 hiderMove.x /= len; 
                 hiderMove.y /= len;
                 Vector2 newPos = {hider.position.x + hiderMove.x * hider.speed * dt, hider.position.y + hiderMove.y * hider.speed * dt};
@@ -155,7 +155,7 @@ int main() {
                 if (IsKeyDown(KEY_RIGHT)) hunterMove.x += 1;
                 
                 if (hunterMove.x != 0 || hunterMove.y != 0) {
-                    float len = std::sqrt(hunterMove.x * hunterMove.x + hunterMove.y * hunterMove.y);
+                    float len = sqrtf(hunterMove.x * hunterMove.x + hunterMove.y * hunterMove.y);
                     hunterMove.x /= len; 
                     hunterMove.y /= len;
                     Vector2 newPos = {hunter.position.x + hunterMove.x * hunter.speed * dt, hunter.position.y + hunterMove.y * hunter.speed * dt};

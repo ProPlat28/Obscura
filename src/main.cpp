@@ -1,17 +1,112 @@
 #include "raylib.h"
 #include <vector>
+#include <string>
 #include <cmath>
 #include <algorithm>
 #include <random>
+#include <cstring>
 
+// ==================== NETWORKING (Cross-Platform UDP) ====================
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#define SOCK_CLOSE closesocket
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#define SOCK_CLOSE close
+#define SOCKET int
+#define INVALID_SOCKET -1
+#define SOCKET_ERROR -1
+#endif
+
+const int NETWORK_PORT = 54000;
+
+struct NetworkPacket {
+    int type; // 0: Ping, 1: JoinReq, 2: JoinAccept, 3: StartGame, 4: PlayerMove
+    char name[32];
+    int timer;
+    char pin[5];
+    int role; // 0: Hider, 1: Hunter
+    float posX, posY;
+};
+
+class NetworkManager {
+public:
+    SOCKET sock = INVALID_SOCKET;
+    bool isHost = false;
+    std::string myName = "";
+    int myRole = -1;
+    bool gameStarted = false;
+
+    bool Init() {
+#ifdef _WIN32
+        WSADATA wsaData;
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) return false;
+#endif
+        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock == INVALID_SOCKET) return false;
+        
+        // Allow broadcast
+        int broadcast = 1;
+        setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (const char*)&broadcast, sizeof(broadcast));
+        
+        // Allow port reuse
+        int reuse = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+
+        sockaddr_in addr;
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_port = htons(NETWORK_PORT);
+        
+        if (bind(sock, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+            // If bind fails, it might be in use. We can still send.
+        }
+        return true;
+    }
+
+    void SendTo(const char* ip, NetworkPacket& pkt) {
+        sockaddr_in dest;
+        dest.sin_family = AF_INET;
+        dest.sin_port = htons(NETWORK_PORT);
+        inet_pton(AF_INET, ip, &dest.sin_addr);
+        sendto(sock, (const char*)&pkt, sizeof(pkt), 0, (sockaddr*)&dest, sizeof(dest));
+    }
+
+    void Broadcast(NetworkPacket& pkt) {
+        SendTo("255.255.255.255", pkt);
+    }
+
+    bool Receive(NetworkPacket& pkt) {
+        sockaddr_in src;
+        socklen_t srcLen = sizeof(src);
+        int bytes = recvfrom(sock, (char*)&pkt, sizeof(pkt), 0, (sockaddr*)&src, &srcLen);
+        return bytes > 0;
+    }
+
+    void Close() {
+        if (sock != INVALID_SOCKET) SOCK_CLOSE(sock);
+#ifdef _WIN32
+        WSACleanup();
+#endif
+    }
+};
+
+// ==================== GAME CONSTANTS & STRUCTS ====================
 const int SCREEN_WIDTH = 1280;
 const int SCREEN_HEIGHT = 720;
 const int TILE_SIZE = 40;
 const int MAP_COLS = SCREEN_WIDTH / TILE_SIZE;
 const int MAP_ROWS = SCREEN_HEIGHT / TILE_SIZE;
 
-enum class GameState { MAIN_MENU, LOBBY, HIDING_PHASE, SEEKING_PHASE, PAUSED, GAME_OVER };
-enum class Winner { NONE, HUNTER, HIDER };
+enum class GameState { 
+    USERNAME_INPUT, MAIN_HUB, HOST_SETUP, LOBBY_LIST, PIN_INPUT, 
+    WAITING_ROOM, ROLE_REVEAL, HIDING_PHASE, SEEKING_PHASE, PAUSED, GAME_OVER 
+};
 
 struct Player {
     Vector2 position = {0, 0};
@@ -25,33 +120,19 @@ struct Player {
 
 struct GameMap {
     std::vector<std::vector<bool>> walls;
-    
     void Generate() {
         walls.assign(MAP_ROWS, std::vector<bool>(MAP_COLS, false));
         std::mt19937 gen(42); 
         std::uniform_int_distribution<> dist(0, 100);
-        
         for (int r = 0; r < MAP_ROWS; ++r) {
             for (int c = 0; c < MAP_COLS; ++c) {
-                if (r == 0 || r == MAP_ROWS - 1 || c == 0 || c == MAP_COLS - 1) {
-                    walls[r][c] = true;
-                } else if (dist(gen) < 20) {
-                    walls[r][c] = true;
-                }
+                if (r == 0 || r == MAP_ROWS - 1 || c == 0 || c == MAP_COLS - 1) walls[r][c] = true;
+                else if (dist(gen) < 20) walls[r][c] = true;
             }
         }
-        for (int r = 1; r < 5; ++r) {
-            for (int c = 1; c < 5; ++c) {
-                walls[r][c] = false;
-            }
-        }
-        for (int r = MAP_ROWS - 5; r < MAP_ROWS - 1; ++r) {
-            for (int c = MAP_COLS - 5; c < MAP_COLS - 1; ++c) {
-                walls[r][c] = false;
-            }
-        }
+        for (int r = 1; r < 5; ++r) for (int c = 1; c < 5; ++c) walls[r][c] = false;
+        for (int r = MAP_ROWS - 5; r < MAP_ROWS - 1; ++r) for (int c = MAP_COLS - 5; c < MAP_COLS - 1; ++c) walls[r][c] = false;
     }
-    
     bool IsWall(float x, float y) const {
         int col = static_cast<int>(x) / TILE_SIZE;
         int row = static_cast<int>(y) / TILE_SIZE;
@@ -60,13 +141,10 @@ struct GameMap {
     }
 };
 
-bool CheckCollisionWithWalls(const Player& player, const GameMap& map, Vector2 newPos) {
-    float offsets[] = {-player.radius, player.radius};
-    for (float ox : offsets) {
-        for (float oy : offsets) {
-            if (map.IsWall(newPos.x + ox, newPos.y + oy)) return true;
-        }
-    }
+// ==================== HELPERS ====================
+bool CheckCollision(const Player& p, const GameMap& m, Vector2 newPos) {
+    float offsets[] = {-p.radius, p.radius};
+    for (float ox : offsets) for (float oy : offsets) if (m.IsWall(newPos.x + ox, newPos.y + oy)) return true;
     return false;
 }
 
@@ -76,176 +154,132 @@ float Distance(const Player& a, const Player& b) {
     return sqrtf(dx * dx + dy * dy);
 }
 
+// Simple Text Input Helper
+std::string GetTextInput(int maxLength) {
+    std::string result = "";
+    int key = GetCharPressed();
+    while (key > 0) {
+        if ((key >= 32) && (key <= 125) && (result.length() < maxLength)) {
+            result += (char)key;
+        }
+        key = GetCharPressed();
+    }
+    if (IsKeyPressed(KEY_BACKSPACE) && !result.empty()) {
+        result.pop_back();
+    }
+    return result;
+}
+
+// ==================== MAIN GAME ====================
 int main() {
-    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Obscura - 1v1 Hide & Seek");
+    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Obscura - Online 1v1");
     SetTargetFPS(60);
     
-    GameState state = GameState::MAIN_MENU;
+    NetworkManager net;
+    if (!net.Init()) {
+        // Handle network init failure
+    }
+
+    GameState state = GameState::USERNAME_INPUT;
     GameMap map;
-    Player hider, hunter;
-    Winner winner = Winner::NONE;
+    Player hider, hunter, localPlayer;
     
-    float lobbyTimer = 60.0f;
+    std::string username = "";
+    std::string pinInput = "";
+    std::string hostPin = "";
+    int lobbyTimer = 60;
+    bool usePin = false;
+    std::string statusMessage = "";
+    float revealTimer = 3.0f;
     float phaseTimer = 0.0f;
-    float totalGameTime = 120.0f;
     
-    hider.position = {100, 100}; 
     hider.color = BLUE;
-    hunter.position = {SCREEN_WIDTH - 100, SCREEN_HEIGHT - 100}; 
     hunter.color = RED;
-    
+
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
-        
-        if (state == GameState::MAIN_MENU) {
-            if (IsKeyPressed(KEY_ENTER)) { 
-                map.Generate(); 
-                state = GameState::LOBBY; 
-            }
-        } 
-        else if (state == GameState::LOBBY) {
-            if (IsKeyDown(KEY_UP)) lobbyTimer = std::min(180.0f, lobbyTimer + dt * 10);
-            if (IsKeyDown(KEY_DOWN)) lobbyTimer = std::max(10.0f, lobbyTimer - dt * 10);
-            if (IsKeyPressed(KEY_ENTER)) { 
-                phaseTimer = lobbyTimer; 
-                state = GameState::HIDING_PHASE; 
-            }
-            if (IsKeyPressed(KEY_ESCAPE)) state = GameState::MAIN_MENU;
-        } 
-        else if (state == GameState::HIDING_PHASE || state == GameState::SEEKING_PHASE) {
-            phaseTimer -= dt;
-            
-            Vector2 hiderMove = {0, 0};
-            if (IsKeyDown(KEY_W)) hiderMove.y -= 1;
-            if (IsKeyDown(KEY_S)) hiderMove.y += 1;
-            if (IsKeyDown(KEY_A)) hiderMove.x -= 1;
-            if (IsKeyDown(KEY_D)) hiderMove.x += 1;
-            
-            if ((IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_E)) && hider.cheatCooldown <= 0) {
-                hider.cheatActive = true; 
-                hider.isVisible = false; 
-                hider.speed = 350.0f; 
-                hider.cheatCooldown = 8.0f;
-            }
-            if (hider.cheatActive) {
-                hider.cheatCooldown -= dt;
-                if (hider.cheatCooldown <= 5.0f) { 
-                    hider.cheatActive = false; 
-                    hider.isVisible = true; 
-                    hider.speed = 200.0f; 
-                }
-            } else if (hider.cheatCooldown > 0) { 
-                hider.cheatCooldown -= dt; 
-            }
-            
-            if (hiderMove.x != 0 || hiderMove.y != 0) {
-                float len = sqrtf(hiderMove.x * hiderMove.x + hiderMove.y * hiderMove.y);
-                hiderMove.x /= len; 
-                hiderMove.y /= len;
-                Vector2 newPos = {hider.position.x + hiderMove.x * hider.speed * dt, hider.position.y + hiderMove.y * hider.speed * dt};
-                if (!CheckCollisionWithWalls(hider, map, newPos)) hider.position = newPos;
-            }
-            
-            if (state == GameState::SEEKING_PHASE) {
-                Vector2 hunterMove = {0, 0};
-                if (IsKeyDown(KEY_UP)) hunterMove.y -= 1;
-                if (IsKeyDown(KEY_DOWN)) hunterMove.y += 1;
-                if (IsKeyDown(KEY_LEFT)) hunterMove.x -= 1;
-                if (IsKeyDown(KEY_RIGHT)) hunterMove.x += 1;
-                
-                if (hunterMove.x != 0 || hunterMove.y != 0) {
-                    float len = sqrtf(hunterMove.x * hunterMove.x + hunterMove.y * hunterMove.y);
-                    hunterMove.x /= len; 
-                    hunterMove.y /= len;
-                    Vector2 newPos = {hunter.position.x + hunterMove.x * hunter.speed * dt, hunter.position.y + hunterMove.y * hunter.speed * dt};
-                    if (!CheckCollisionWithWalls(hunter, map, newPos)) hunter.position = newPos;
-                }
-                
-                if (!hider.cheatActive && Distance(hider, hunter) < (hider.radius + hunter.radius)) { 
-                    winner = Winner::HUNTER; 
-                    state = GameState::GAME_OVER; 
-                }
-                if (phaseTimer <= 0) { 
-                    winner = Winner::HIDER; 
-                    state = GameState::GAME_OVER; 
-                }
-            } else {
-                if (phaseTimer <= 0) { 
-                    state = GameState::SEEKING_PHASE; 
-                    phaseTimer = totalGameTime; 
-                }
-            }
-            
-            if (IsKeyPressed(KEY_ESCAPE)) state = GameState::PAUSED;
-        } 
-        else if (state == GameState::PAUSED) {
-            if (IsKeyPressed(KEY_ESCAPE)) {
-                if (phaseTimer < totalGameTime) state = GameState::SEEKING_PHASE;
-                else state = GameState::HIDING_PHASE;
-            }
-            if (IsKeyPressed(KEY_Q)) state = GameState::MAIN_MENU;
-        } 
-        else if (state == GameState::GAME_OVER) {
-            if (IsKeyPressed(KEY_ENTER)) { 
-                state = GameState::MAIN_MENU; 
-                winner = Winner::NONE; 
-                hider.position = {100, 100}; 
-                hunter.position = {SCREEN_WIDTH - 100, SCREEN_HEIGHT - 100}; 
-            }
-        }
+        NetworkPacket pkt;
+        bool gotPacket = net.Receive(pkt);
 
-        BeginDrawing();
-        ClearBackground(BLACK);
-        
-        // FIX: Only draw the map if it has actually been generated!
-        if (!map.walls.empty()) {
-            for (int r = 0; r < MAP_ROWS; ++r) {
-                for (int c = 0; c < MAP_COLS; ++c) {
-                    if (map.walls[r][c]) DrawRectangle(c * TILE_SIZE, r * TILE_SIZE, TILE_SIZE, TILE_SIZE, DARKGRAY);
+        // ==================== STATE LOGIC ====================
+        if (state == GameState::USERNAME_INPUT) {
+            DrawText("Enter Username:", SCREEN_WIDTH/2 - 100, 200, 30, WHITE);
+            DrawText(username.c_str(), SCREEN_WIDTH/2 - 100, 250, 30, GREEN);
+            DrawText("Press ENTER to confirm", SCREEN_WIDTH/2 - 150, 350, 20, GRAY);
+            
+            std::string input = GetTextInput(15);
+            if (!input.empty()) username += input;
+            if (IsKeyPressed(KEY_BACKSPACE) && !username.empty()) username.pop_back();
+            
+            if (IsKeyPressed(KEY_ENTER) && !username.empty()) {
+                net.myName = username;
+                state = GameState::MAIN_HUB;
+            }
+        }
+        else if (state == GameState::MAIN_HUB) {
+            DrawText("MAIN HUB", SCREEN_WIDTH/2 - 100, 150, 50, WHITE);
+            DrawText(TextFormat("Logged in as: %s", net.myName.c_str()), SCREEN_WIDTH/2 - 150, 220, 20, GREEN);
+            
+            // Draw Buttons
+            DrawRectangle(SCREEN_WIDTH/2 - 150, 300, 300, 60, DARKGREEN);
+            DrawText("HOST GAME", SCREEN_WIDTH/2 - 90, 320, 30, WHITE);
+            
+            DrawRectangle(SCREEN_WIDTH/2 - 150, 400, 300, 60, DARKBLUE);
+            DrawText("JOIN GAME", SCREEN_WIDTH/2 - 90, 420, 30, WHITE);
+            
+            if (GetMousePosition().x > SCREEN_WIDTH/2 - 150 && GetMousePosition().x < SCREEN_WIDTH/2 + 150) {
+                if (GetMousePosition().y > 300 && GetMousePosition().y < 360 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                    state = GameState::HOST_SETUP;
+                }
+                if (GetMousePosition().y > 400 && GetMousePosition().y < 460 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                    state = GameState::LOBBY_LIST;
                 }
             }
         }
-        
-        if (state == GameState::MAIN_MENU) {
-            DrawText("OBS CURA", SCREEN_WIDTH/2 - 180, 200, 80, WHITE);
-            DrawText("1v1 Hide and Seek", SCREEN_WIDTH/2 - 140, 300, 30, GRAY);
-            DrawText("Press ENTER to Start", SCREEN_WIDTH/2 - 140, 450, 30, GREEN);
-        } 
-        else if (state == GameState::LOBBY) {
-            DrawText("PREMATCH LOBBY", SCREEN_WIDTH/2 - 160, 150, 50, WHITE);
-            DrawText(TextFormat("Hunter Countdown: %.0f seconds", lobbyTimer), SCREEN_WIDTH/2 - 200, 250, 30, YELLOW);
-            DrawText("UP/DOWN to adjust timer", SCREEN_WIDTH/2 - 150, 320, 20, GRAY);
-            DrawText("Press ENTER to start", SCREEN_WIDTH/2 - 120, 360, 20, GREEN);
-        } 
-        else if (state == GameState::HIDING_PHASE || state == GameState::SEEKING_PHASE) {
-            if (hider.isVisible || state == GameState::HIDING_PHASE) {
-                DrawCircleV(hider.position, hider.radius, hider.cheatActive ? ColorAlpha(BLUE, 0.3f) : BLUE);
-            }
-            DrawCircleV(hunter.position, hunter.radius, RED);
+        else if (state == GameState::HOST_SETUP) {
+            DrawText("HOST SETUP", SCREEN_WIDTH/2 - 120, 150, 40, WHITE);
             
-            DrawText(TextFormat("Phase: %s", state == GameState::HIDING_PHASE ? "HIDING" : "SEEKING"), 10, 10, 20, WHITE);
-            DrawText(TextFormat("Time: %.1f", phaseTimer), 10, 40, 20, YELLOW);
-            DrawText(TextFormat("Cheat CD: %.1f", hider.cheatCooldown), 10, 70, 20, hider.cheatActive ? GREEN : GRAY);
-            DrawText("Hider: WASD | Space/E (Cheat)", 10, SCREEN_HEIGHT - 50, 15, DARKGRAY);
-            DrawText("Hunter: Arrow Keys", 10, SCREEN_HEIGHT - 30, 15, DARKGRAY);
-        } 
-        else if (state == GameState::PAUSED) {
-            DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, ColorAlpha(BLACK, 0.8f));
-            DrawText("PAUSED", SCREEN_WIDTH/2 - 80, SCREEN_HEIGHT/2 - 50, 40, WHITE);
-            DrawText("ESC to Resume", SCREEN_WIDTH/2 - 100, SCREEN_HEIGHT/2 + 20, 20, GRAY);
-            DrawText("Q to Quit to Menu", SCREEN_WIDTH/2 - 110, SCREEN_HEIGHT/2 + 50, 20, RED);
-        } 
-        else if (state == GameState::GAME_OVER) {
-            DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, ColorAlpha(BLACK, 0.85f));
-            const char* winnerText = (winner == Winner::HUNTER) ? "HUNTER WINS!" : "HIDER WINS!";
-            Color winnerColor = (winner == Winner::HUNTER) ? RED : BLUE;
-            DrawText(winnerText, SCREEN_WIDTH/2 - 150, SCREEN_HEIGHT/2 - 30, 50, winnerColor);
-            DrawText("Press ENTER for Main Menu", SCREEN_WIDTH/2 - 150, SCREEN_HEIGHT/2 + 50, 20, WHITE);
+            DrawText(TextFormat("Timer: %d seconds (UP/DOWN)", lobbyTimer), SCREEN_WIDTH/2 - 150, 220, 20, YELLOW);
+            if (IsKeyDown(KEY_UP)) lobbyTimer = std::min(180, lobbyTimer + 1);
+            if (IsKeyDown(KEY_DOWN)) lobbyTimer = std::max(10, lobbyTimer - 1);
+            
+            DrawText("Use PIN? (Y/N)", SCREEN_WIDTH/2 - 100, 280, 20, WHITE);
+            if (IsKeyPressed(KEY_Y)) usePin = true;
+            if (IsKeyPressed(KEY_N)) usePin = false;
+            
+            if (usePin) {
+                DrawText("Enter 4-digit PIN:", SCREEN_WIDTH/2 - 120, 330, 20, WHITE);
+                DrawText(hostPin.c_str(), SCREEN_WIDTH/2 - 50, 360, 30, RED);
+                std::string pinIn = GetTextInput(4);
+                // Only allow numbers
+                for (char c : pinIn) if (c >= '0' && c <= '9') hostPin += c;
+                if (IsKeyPressed(KEY_BACKSPACE) && !hostPin.empty()) hostPin.pop_back();
+                if (hostPin.length() > 4) hostPin = hostPin.substr(0, 4);
+            }
+            
+            DrawRectangle(SCREEN_WIDTH/2 - 100, 450, 200, 50, GREEN);
+            DrawText("CREATE LOBBY", SCREEN_WIDTH/2 - 80, 465, 20, WHITE);
+            
+            if (GetMousePosition().x > SCREEN_WIDTH/2 - 100 && GetMousePosition().x < SCREEN_WIDTH/2 + 100 &&
+                GetMousePosition().y > 450 && GetMousePosition().y < 500 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                
+                if (usePin && hostPin.length() != 4) {
+                    statusMessage = "PIN must be 4 digits!";
+                } else {
+                    net.isHost = true;
+                    state = GameState::WAITING_ROOM;
+                    statusMessage = "Lobby created! Waiting for player...";
+                }
+            }
+            DrawText(statusMessage.c_str(), SCREEN_WIDTH/2 - 150, 550, 20, RED);
+            
+            if (IsKeyPressed(KEY_ESCAPE)) state = GameState::MAIN_HUB;
         }
-        
-        EndDrawing();
-    }
-    
-    CloseWindow();
-    return 0;
-}
+        else if (state == GameState::LOBBY_LIST) {
+            DrawText("AVAILABLE LOBBIES", SCREEN_WIDTH/2 - 150, 100, 40, WHITE);
+            
+            // In a real app, we'd render discovered lobbies. For MVP, we show a message.
+            DrawText("No lobbies found on LAN.", SCREEN_WIDTH/2 - 150, 200, 30, GRAY);
+            DrawText("To join, press 'J' and type Host IP (or 127.0.0.1 for local test)", SCREEN_WIDTH/2 - 300, 250, 20, YELLOW);
+            
+            DrawText("Enter Host IP:", SCREEN_WIDTH/2 - 100, 35

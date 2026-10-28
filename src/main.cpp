@@ -60,6 +60,7 @@ class NetworkManager {
 public:
     SOCKET sock = INVALID_SOCKET;
     bool isConnected = false;
+    bool isHost = false; // FIX: Added isHost back to the class
     std::string myName = "";
     int myRole = -1;
     std::string receiveBuffer = "";
@@ -245,7 +246,6 @@ int main() {
             }
             else if (msg.substr(0, 6) == "ERROR:") {
                 statusMessage = "Error: " + msg.substr(6);
-                // Return to previous setup screen on error
                 if (state == GameState::WAITING_ROOM) {
                     state = (net.isHost) ? GameState::HOST_SETUP : GameState::JOIN_SETUP;
                 }
@@ -321,6 +321,7 @@ int main() {
             if (mouse.x > SCREEN_WIDTH/2 - 100 && mouse.x < SCREEN_WIDTH/2 + 100 && 
                 mouse.y > 400 && mouse.y < 450 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
                 net.Send("HOST:" + hostRoomCode + ":" + std::to_string(lobbyTimer) + "\n");
+                net.isHost = true; // FIX: Set isHost to true when hosting
                 state = GameState::WAITING_ROOM;
                 statusMessage = "Waiting for player to join code...";
             }

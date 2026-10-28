@@ -1,4 +1,4 @@
-name: Obscura Build
+name: Obscura Zero-Error CI/CD
 
 on:
   push:
@@ -18,8 +18,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure CMake
-        # Removed -G "Visual Studio 17 2022" to let CMake auto-detect the runner's default VS version
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        # Added -DCMAKE_POLICY_VERSION_MINIMUM=3.5 to bypass Raylib's older CMake syntax on new runners
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
       - name: Build Project (Zero-Error Check)
         run: cmake --build build --config Release

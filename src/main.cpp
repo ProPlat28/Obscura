@@ -42,6 +42,8 @@
 #include <mutex>
 #include <queue>
 #include <sstream>
+#include <memory>
+#include <chrono>
 
 const char* SERVER_IP = "obscura-server-12ot.onrender.com"; 
 const int SERVER_PORT = 80;
@@ -65,6 +67,9 @@ public:
         cli->set_connection_timeout(10, 0); 
         cli->set_read_timeout(60, 0); 
         
+        // FIX: Tell the client to follow Render's HTTP -> HTTPS redirect
+        cli->set_follow_location(true); 
+        
         running = true;
         netThread = std::thread(&NetworkManager::NetworkLoop, this);
     }
@@ -85,7 +90,7 @@ public:
                     }
                 }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
     }
 
@@ -93,7 +98,11 @@ public:
         roomCode = code;
         role = "host";
         isHost = true;
-        cli->Post("/create?code=" + code + "&time=" + std::to_string(time), "", "text/plain");
+        auto res = cli->Post("/create?code=" + code + "&time=" + std::to_string(time), "", "text/plain");
+        if (!res || res->status != 200) {
+            std::lock_guard<std::mutex> lock(mtx);
+            msgQueue.push("ERROR:Failed to create room");
+        }
     }
 
     void JoinRoom(const std::string& code) {
@@ -109,6 +118,9 @@ public:
                 if (!line.empty() && line.back() == '\r') line.pop_back();
                 if (!line.empty()) msgQueue.push(line);
             }
+        } else {
+            std::lock_guard<std::mutex> lock(mtx);
+            msgQueue.push("ERROR:Failed to join room. Check code.");
         }
     }
 
@@ -347,7 +359,6 @@ int main() {
             phaseTimer -= dt;
             Vector2 move = {0, 0};
             
-            // FIX: Each if statement on its own line to satisfy Linux -Werror=misleading-indentation
             if (IsKeyDown(KEY_W)) move.y -= 1;
             if (IsKeyDown(KEY_S)) move.y += 1;
             if (IsKeyDown(KEY_A)) move.x -= 1;

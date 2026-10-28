@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-windows:
-    name: Build Windows (.exe)
+    name: Windows
     runs-on: windows-latest
     steps:
       - name: Checkout Repository
@@ -20,12 +20,12 @@ jobs:
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Obscura-Windows-EXE
+          name: Obscura (Windows)
           path: build/Release/Obscura.exe
           retention-days: 14
 
   build-linux:
-    name: Build Linux (Binary)
+    name: Linux
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Repository
@@ -42,13 +42,36 @@ jobs:
       - name: Build Project
         run: cmake --build build --config Release -j$(nproc)
       
-      # FIX: Explicitly grant execute permissions to the binary
+      # Explicitly grant execute permissions to the binary
       - name: Set Execute Permissions
         run: chmod +x build/Obscura
 
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Obscura-Linux-Binary
+          name: Obscura (Linux)
+          path: build/Obscura
+          retention-days: 14
+
+  build-macos:
+    name: MacOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Install Dependencies
+        run: brew install cmake
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Project
+        run: cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Obscura (MacOS)
           path: build/Obscura
           retention-days: 14

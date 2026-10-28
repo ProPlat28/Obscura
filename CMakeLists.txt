@@ -1,9 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 
-# Fix for CMake 4.0+ compatibility with older dependencies like Raylib 5.0
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+# Fix for CMake 4.x compatibility with older dependencies
+set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
 
 project(Obscura VERSION 1.0.0 LANGUAGES CXX C)
+
+# CRITICAL FIX: Force static libraries to prevent Windows DLL configuration errors
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Force static libraries" FORCE)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,10 +27,6 @@ file(GLOB_RECURSE SOURCES src/*.cpp src/*.h)
 add_executable(Obscura ${SOURCES})
 target_include_directories(Obscura PRIVATE src)
 target_link_libraries(Obscura PRIVATE raylib)
-
-if(APPLE)
-    target_link_libraries(Obscura PRIVATE "-framework IOKit" "-framework Cocoa" "-framework GLUT")
-endif()
 
 # 3. ZERO-ERROR GUARANTEE: Apply strict warnings ONLY to our code
 if(MSVC)

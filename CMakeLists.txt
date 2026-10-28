@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
+
+# CMake 4.0+ removed support for policies < 3.5. 
+# This forces compatibility for older dependencies like Raylib.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 project(Obscura VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)

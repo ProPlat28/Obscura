@@ -54,18 +54,22 @@
 #include <cctype>
 
 const char* SERVER_IP = "obscura-server-12ot.onrender.com"; 
-const int SERVER_PORT = 80;
+const int SERVER_PORT = 80; // HTTP port
 
 class NetworkManager {
 public:
     SOCKET sock = INVALID_SOCKET;
     bool isConnected = false;
-    bool isHost = false; // FIX: Added isHost back to the class
+    bool isHost = false;
     std::string myName = "";
     int myRole = -1;
     std::string receiveBuffer = "";
+    std::string currentRoomCode = "";
+    std::string host;
+    int port;
 
-    bool ConnectToServer() {
+    bool ConnectToServer(const std::string& h, int p) {
+        host = h; port = p;
 #ifdef _WIN32
         WSADATA wsaData;
         if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) return false;
@@ -74,7 +78,7 @@ public:
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
         
-        if (getaddrinfo(SERVER_IP, std::to_string(SERVER_PORT).c_str(), &hints, &result) != 0) return false;
+        if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &result) != 0) return false;
 
         sock = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
         if (sock == INVALID_SOCKET) { freeaddrinfo(result); return false; }
@@ -95,23 +99,57 @@ public:
         return true;
     }
 
-    void Send(const std::string& msg) {
-        if (isConnected) send(sock, msg.c_str(), (int)msg.length(), 0);
+    void SendPost(const std::string& path, const std::string& body) {
+        if (!isConnected) return;
+        std::string req = "POST " + path + " HTTP/1.1\r\n"
+                          "Host: " + host + "\r\n"
+                          "Content-Type: text/plain\r\n"
+                          "Content-Length: " + std::to_string(body.length()) + "\r\n"
+                          "Connection: keep-alive\r\n\r\n" + body;
+        send(sock, req.c_str(), (int)req.length(), 0);
+    }
+
+    void CreateRoom(const std::string& code, int time) {
+        currentRoomCode = code;
+        SendPost("/create?code=" + code + "&time=" + std::to_string(time), "");
+    }
+
+    void JoinRoom(const std::string& code) {
+        currentRoomCode = code;
+        SendPost("/join?code=" + code, "");
+    }
+
+    void StartPolling() {
+        std::string role = isHost ? "host" : "client";
+        SendPost("/poll?code=" + currentRoomCode + "&role=" + role, "");
+    }
+
+    void SendData(const std::string& data) {
+        std::string role = isHost ? "host" : "client";
+        SendPost("/send?code=" + currentRoomCode + "&role=" + role, data);
     }
 
     void ProcessMessages(std::vector<std::string>& outMessages) {
         if (!isConnected) return;
-        char buffer[1024];
+        char buffer[4096];
         int bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
         if (bytes > 0) {
             buffer[bytes] = '\0';
             receiveBuffer += buffer;
             
-            size_t pos;
-            while ((pos = receiveBuffer.find('\n')) != std::string::npos) {
-                std::string line = receiveBuffer.substr(0, pos);
-                receiveBuffer.erase(0, pos + 1);
-                if (!line.empty()) outMessages.push_back(line);
+            size_t headerEnd = receiveBuffer.find("\r\n\r\n");
+            if (headerEnd != std::string::npos) {
+                std::string body = receiveBuffer.substr(headerEnd + 4);
+                receiveBuffer = ""; 
+                
+                size_t pos;
+                while ((pos = body.find('\n')) != std::string::npos) {
+                    std::string line = body.substr(0, pos);
+                    body.erase(0, pos + 1);
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                    if (!line.empty()) outMessages.push_back(line);
+                }
+                if (!body.empty()) outMessages.push_back(body);
             }
         }
     }
@@ -213,7 +251,7 @@ int main() {
     SetTargetFPS(60);
 
     NetworkManager net;
-    bool connected = net.ConnectToServer();
+    bool connected = net.ConnectToServer(SERVER_IP, SERVER_PORT);
 
     GameState state = connected ? GameState::USERNAME_INPUT : GameState::NO_CONNECTION;
     GameMap map;
@@ -230,7 +268,6 @@ int main() {
         std::vector<std::string> messages;
         net.ProcessMessages(messages);
 
-        // Process Server Messages
         for (const std::string& msg : messages) {
             if (msg.substr(0, 5) == "ROLE:") {
                 net.myRole = std::stoi(msg.substr(5));
@@ -320,10 +357,12 @@ int main() {
             Vector2 mouse = GetMousePosition();
             if (mouse.x > SCREEN_WIDTH/2 - 100 && mouse.x < SCREEN_WIDTH/2 + 100 && 
                 mouse.y > 400 && mouse.y < 450 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                net.Send("HOST:" + hostRoomCode + ":" + std::to_string(lobbyTimer) + "\n");
-                net.isHost = true; // FIX: Set isHost to true when hosting
+                net.isHost = true;
+                net.CreateRoom(hostRoomCode, lobbyTimer);
                 state = GameState::WAITING_ROOM;
                 statusMessage = "Waiting for player to join code...";
+                // Start polling for messages from the server
+                net.StartPolling();
             }
             
             DrawText(statusMessage.c_str(), SCREEN_WIDTH/2 - 150, 500, 20, RED);
@@ -345,7 +384,8 @@ int main() {
             DrawText("Press ENTER to Join", SCREEN_WIDTH/2 - 120, 350, 20, GRAY);
             
             if (IsKeyPressed(KEY_ENTER) && roomCodeInput.length() == 4) {
-                net.Send("JOIN:" + roomCodeInput + "\n");
+                net.isHost = false;
+                net.JoinRoom(roomCodeInput);
                 state = GameState::WAITING_ROOM;
                 statusMessage = "Joining room...";
             }
@@ -356,8 +396,14 @@ int main() {
         else if (state == GameState::WAITING_ROOM) {
             DrawText("WAITING ROOM", SCREEN_WIDTH/2 - 120, 150, 40, WHITE);
             DrawText(statusMessage.c_str(), SCREEN_WIDTH/2 - 200, 250, 20, YELLOW);
+            
+            // If we received START, we transitioned to ROLE_REVEAL. 
+            // If we are still waiting, we need to keep polling the server for new messages.
+            if (state == GameState::WAITING_ROOM) {
+                net.StartPolling();
+            }
+
             if (IsKeyPressed(KEY_ESCAPE)) {
-                net.Send("DATA:{\"type\":\"quit\"}\n");
                 state = GameState::MAIN_HUB;
             }
         }
@@ -411,12 +457,15 @@ int main() {
                 }
             }
             
-            std::string posMsg = "DATA:{\"type\":4,\"x\":" + 
+            std::string posMsg = "{\"type\":4,\"x\":" + 
                                  std::to_string(localPlayer.position.x) + 
                                  ",\"y\":" + 
                                  std::to_string(localPlayer.position.y) + 
-                                 "}\n";
-            net.Send(posMsg);
+                                 "}";
+            net.SendData(posMsg);
+            
+            // Keep polling for opponent's position
+            net.StartPolling();
             
             if (state == GameState::SEEKING_PHASE) {
                 if (phaseTimer <= 0) { 

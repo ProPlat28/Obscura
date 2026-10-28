@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
-# Fix for CMake 4.x compatibility with older dependencies
+# FIX: Handles CMake 4.x compatibility safely without relying on command-line arguments
 set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
 
 project(Obscura VERSION 1.0.0 LANGUAGES CXX C)
 
-# CRITICAL FIX: Force static libraries to prevent Windows DLL configuration errors
+# FIX: Forces static linking to prevent Windows DLL configuration errors
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Force static libraries" FORCE)
 
 set(CMAKE_CXX_STANDARD 20)

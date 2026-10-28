@@ -3,17 +3,26 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
+// 1. Mask Windows API macros BEFORE including Windows headers
+#define Rectangle Rectangle_Win32
+#define CloseWindow CloseWindow_Win32
+#define ShowCursor ShowCursor_Win32
+#define DrawText DrawText_Win32
+#define DrawTextEx DrawTextEx_Win32
+#define LoadImage LoadImage_Win32
+#define PlaySound PlaySound_Win32
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 
-// FIX: Undefine Windows macros AFTER including Windows headers to prevent Raylib conflicts
+// 2. Unmask them so Raylib can define them cleanly
+#undef Rectangle
 #undef CloseWindow
 #undef ShowCursor
 #undef DrawText
 #undef DrawTextEx
 #undef LoadImage
-#undef Rectangle
 #undef PlaySound
 
 #define SOCK_CLOSE closesocket
@@ -39,13 +48,13 @@
 #include <random>
 #include <cstring>
 #include <sstream>
+#include <cctype> // Required for std::toupper
 
 // ==========================================
 // CONFIGURATION
 // ==========================================
-// CHANGE THIS to your Render.com URL (without https://)
 const char* SERVER_IP = "obscura-server-12ot.onrender.com"; 
-const int SERVER_PORT = 80; // Render uses port 80 for HTTP/web traffic on the free tier
+const int SERVER_PORT = 80;
 
 // ==========================================
 // NETWORK MANAGER (TCP Relay)
@@ -55,7 +64,7 @@ public:
     SOCKET sock = INVALID_SOCKET;
     bool isConnected = false;
     std::string myName = "";
-    int myRole = -1; // 0: Hider, 1: Hunter
+    int myRole = -1;
     std::string receiveBuffer = "";
 
     bool ConnectToServer() {
@@ -127,18 +136,8 @@ const int MAP_COLS = SCREEN_WIDTH / TILE_SIZE;
 const int MAP_ROWS = SCREEN_HEIGHT / TILE_SIZE;
 
 enum class GameState { 
-    CONNECTING, 
-    NO_CONNECTION, 
-    USERNAME_INPUT, 
-    MAIN_HUB, 
-    HOST_SETUP, 
-    JOIN_SETUP, 
-    WAITING_ROOM, 
-    ROLE_REVEAL, 
-    HIDING_PHASE, 
-    SEEKING_PHASE, 
-    PAUSED, 
-    GAME_OVER 
+    CONNECTING, NO_CONNECTION, USERNAME_INPUT, MAIN_HUB, HOST_SETUP, 
+    JOIN_SETUP, WAITING_ROOM, ROLE_REVEAL, HIDING_PHASE, SEEKING_PHASE, PAUSED, GAME_OVER 
 };
 
 struct Player {
@@ -168,16 +167,11 @@ struct GameMap {
                 }
             }
         }
-        
         for (int r = 1; r < 5; ++r) {
-            for (int c = 1; c < 5; ++c) {
-                walls[r][c] = false;
-            }
+            for (int c = 1; c < 5; ++c) walls[r][c] = false;
         }
         for (int r = MAP_ROWS - 5; r < MAP_ROWS - 1; ++r) {
-            for (int c = MAP_COLS - 5; c < MAP_COLS - 1; ++c) {
-                walls[r][c] = false;
-            }
+            for (int c = MAP_COLS - 5; c < MAP_COLS - 1; ++c) walls[r][c] = false;
         }
     }
     
@@ -207,7 +201,7 @@ std::string GetTextInput(int maxLength) {
     int key = GetCharPressed();
     while (key > 0) {
         if ((key >= 32) && (key <= 125) && (result.length() < static_cast<size_t>(maxLength))) {
-            result += (char)key;
+            result += static_cast<char>(key);
         }
         key = GetCharPressed();
     }
@@ -247,7 +241,6 @@ int main() {
         std::vector<std::string> messages;
         net.ProcessMessages(messages);
 
-        // Process Server Messages
         for (const std::string& msg : messages) {
             if (msg == "PLAYER_JOINED") {
                 net.myRole = std::rand() % 2;
@@ -270,7 +263,6 @@ int main() {
             }
         }
 
-        // ==================== STATE LOGIC ====================
         if (state == GameState::NO_CONNECTION) {
             DrawText("CANNOT CONNECT TO SERVER", SCREEN_WIDTH/2 - 200, SCREEN_HEIGHT/2 - 50, 30, RED);
             DrawText("Check SERVER_IP in main.cpp", SCREEN_WIDTH/2 - 150, SCREEN_HEIGHT/2, 20, GRAY);
@@ -338,7 +330,10 @@ int main() {
             DrawText("Enter 4-Letter Room Code:", SCREEN_WIDTH/2 - 150, 220, 20, WHITE);
             
             std::string input = GetTextInput(4);
-            for (char& c : input) c = std::toupper(c);
+            // FIX: static_cast to satisfy MSVC /W4 warning
+            for (char& c : input) {
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            }
             if (!input.empty()) roomCodeInput += input;
             if (IsKeyPressed(KEY_BACKSPACE) && !roomCodeInput.empty()) roomCodeInput.pop_back();
             if (roomCodeInput.length() > 4) roomCodeInput = roomCodeInput.substr(0, 4);
@@ -448,7 +443,6 @@ int main() {
             if (IsKeyPressed(KEY_ENTER)) state = GameState::MAIN_HUB;
         }
 
-        // ==================== RENDERING ====================
         BeginDrawing();
         ClearBackground(BLACK);
         

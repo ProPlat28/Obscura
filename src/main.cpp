@@ -70,7 +70,6 @@ public:
         cli->set_connection_timeout(10, 0); 
         cli->set_read_timeout(20, 0); 
         cli->set_keep_alive(true); 
-        
         running = true;
         netThread = std::thread(&NetworkManager::NetworkLoop, this);
     }
@@ -78,7 +77,6 @@ public:
     void NetworkLoop() {
         while (running) {
             if (!roomCode.empty() && !role.empty()) {
-                // 1. Send queued messages
                 {
                     std::lock_guard<std::mutex> lock(mtx);
                     if (!sendQueue.empty()) {
@@ -88,16 +86,12 @@ public:
                         cli->Post("/send?code=" + roomCode + "&role=" + role, data, "text/plain");
                     }
                 }
-
-                // 2. Poll for incoming
                 std::string path = "/poll?code=" + roomCode + "&role=" + role;
                 httplib::Result res;
-                
                 {
                     std::lock_guard<std::mutex> lock(httpMtx);
                     res = cli->Post(path, "", "text/plain");
                 }
-                
                 if (res && res->status == 200) {
                     std::lock_guard<std::mutex> lock(mtx);
                     std::istringstream stream(res->body);
@@ -105,7 +99,6 @@ public:
                     while (std::getline(stream, line)) {
                         if (!line.empty() && line.back() == '\r') line.pop_back();
                         if (!line.empty()) {
-                            // FIX: Limit queue size to prevent RAM spikes
                             if (msgQueue.size() >= 100) msgQueue.pop(); 
                             msgQueue.push(line);
                         }
@@ -116,15 +109,14 @@ public:
         }
     }
 
-    void CreateRoom(const std::string& code, int time) {
+    void CreateRoom(const std::string& code, int time, int headstart) {
         roomCode = code;
         role = "host";
         isHost = true;
-        
         httplib::Result res;
         {
             std::lock_guard<std::mutex> lock(httpMtx);
-            res = cli->Post("/create?code=" + code + "&time=" + std::to_string(time), "", "text/plain");
+            res = cli->Post("/create?code=" + code + "&time=" + std::to_string(time) + "&headstart=" + std::to_string(headstart), "", "text/plain");
         }
         if (!res || res->status != 200) {
             std::lock_guard<std::mutex> lock(mtx);
@@ -136,7 +128,6 @@ public:
         roomCode = code;
         role = "client";
         isHost = false;
-        
         httplib::Result res;
         {
             std::lock_guard<std::mutex> lock(httpMtx);
@@ -162,7 +153,6 @@ public:
     void SendData(const std::string& data) {
         if (!roomCode.empty()) {
             std::lock_guard<std::mutex> lock(mtx);
-            // FIX: Limit queue size to prevent RAM spikes from network lag
             if (sendQueue.size() >= 5) sendQueue.pop(); 
             sendQueue.push(data);
         }
@@ -199,7 +189,6 @@ struct Player {
     float speed = 200.0f;
     float radius = 15.0f;
     Color color = WHITE;
-    bool isVisible = true;
     float cheatCooldown = 0.0f;
     bool cheatActive = false;
 };
@@ -260,7 +249,7 @@ std::string GenerateRoomCode() {
 }
 
 int main() {
-    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Obscura - Online 1v1 Hide & Seek");
+    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Obscura - True Hide & Seek");
     SetTargetFPS(60);
 
     NetworkManager net;
@@ -271,8 +260,14 @@ int main() {
     Player localPlayer, opponentPlayer;
     
     std::string username = "", roomCodeInput = "", hostRoomCode = "", statusMessage = "";
-    int lobbyTimer = 60;
-    float revealTimer = 3.0f, phaseTimer = 0.0f;
+    
+    // FIX: New Configurable Timers
+    int headStartTimer = 10; // Default 10 seconds head start
+    int seekingTime = 120;   // Default 120 seconds to find the hider
+    
+    float currentHeadStart = 0.0f;
+    float phaseTimer = 0.0f;
+    float revealTimer = 3.0f;
     float netSendTimer = 0.0f; 
     
     localPlayer.color = BLUE; 
@@ -285,7 +280,8 @@ int main() {
 
         for (const std::string& msg : messages) {
             if (msg.substr(0, 5) == "ROLE:") net.myRole = std::stoi(msg.substr(5));
-            else if (msg.substr(0, 6) == "TIMER:") { lobbyTimer = std::stoi(msg.substr(6)); phaseTimer = static_cast<float>(lobbyTimer); }
+            else if (msg.substr(0, 10) == "HEADSTART:") currentHeadStart = static_cast<float>(std::stoi(msg.substr(10)));
+            else if (msg.substr(0, 6) == "TIMER:") phaseTimer = static_cast<float>(std::stoi(msg.substr(6)));
             else if (msg == "START") { map.Generate(); state = GameState::ROLE_REVEAL; revealTimer = 3.0f; }
             else if (msg.substr(0, 6) == "ERROR:") { statusMessage = "Error: " + msg.substr(6); state = (net.isHost) ? GameState::HOST_SETUP : GameState::JOIN_SETUP; }
             else if (msg == "HOST_DISCONNECTED" || msg == "CLIENT_DISCONNECTED") { statusMessage = "Opponent disconnected!"; state = GameState::MAIN_HUB; }
@@ -299,7 +295,7 @@ int main() {
             }
         }
 
-        // Smooth Interpolation for opponent
+        // Smooth Interpolation
         float lerpSpeed = 10.0f * dt;
         opponentPlayer.position.x += (opponentPlayer.targetPos.x - opponentPlayer.position.x) * lerpSpeed;
         opponentPlayer.position.y += (opponentPlayer.targetPos.y - opponentPlayer.position.y) * lerpSpeed;
@@ -324,17 +320,27 @@ int main() {
             }
         }
         else if (state == GameState::HOST_SETUP) {
-            DrawText("HOST GAME", SCREEN_WIDTH/2 - 120, 150, 40, WHITE);
-            DrawText(TextFormat("Room Code: %s", hostRoomCode.c_str()), SCREEN_WIDTH/2 - 100, 220, 50, YELLOW);
-            DrawText(TextFormat("Timer: %d (UP/DOWN)", lobbyTimer), SCREEN_WIDTH/2 - 120, 300, 20, YELLOW);
-            if (IsKeyDown(KEY_UP)) lobbyTimer = std::min(180, lobbyTimer + 1);
-            if (IsKeyDown(KEY_DOWN)) lobbyTimer = std::max(10, lobbyTimer - 1);
-            DrawRectangle(SCREEN_WIDTH/2 - 100, 350, 200, 50, GREEN); DrawText("START WAITING", SCREEN_WIDTH/2 - 90, 365, 20, WHITE);
+            DrawText("HOST GAME", SCREEN_WIDTH/2 - 120, 100, 40, WHITE);
+            DrawText(TextFormat("Room Code: %s", hostRoomCode.c_str()), SCREEN_WIDTH/2 - 100, 160, 50, YELLOW);
+            
+            // FIX: Head Start Timer UI
+            DrawText(TextFormat("Head Start: %d sec (LEFT/RIGHT)", headStartTimer), SCREEN_WIDTH/2 - 180, 240, 20, GREEN);
+            if (IsKeyPressed(KEY_LEFT)) headStartTimer = std::max(0, headStartTimer - 5);
+            if (IsKeyPressed(KEY_RIGHT)) headStartTimer = std::min(60, headStartTimer + 5);
+            
+            // FIX: Seeking Time UI
+            DrawText(TextFormat("Seeking Time: %d sec (UP/DOWN)", seekingTime), SCREEN_WIDTH/2 - 180, 280, 20, YELLOW);
+            if (IsKeyPressed(KEY_UP)) seekingTime = std::min(300, seekingTime + 10);
+            if (IsKeyPressed(KEY_DOWN)) seekingTime = std::max(30, seekingTime - 10);
+            
+            DrawRectangle(SCREEN_WIDTH/2 - 100, 330, 200, 50, GREEN); DrawText("START WAITING", SCREEN_WIDTH/2 - 90, 345, 20, WHITE);
             Vector2 mouse = GetMousePosition();
-            if (mouse.x > SCREEN_WIDTH/2 - 100 && mouse.x < SCREEN_WIDTH/2 + 100 && mouse.y > 350 && mouse.y < 400 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                net.CreateRoom(hostRoomCode, lobbyTimer); state = GameState::WAITING_ROOM; statusMessage = "Waiting for player...";
+            if (mouse.x > SCREEN_WIDTH/2 - 100 && mouse.x < SCREEN_WIDTH/2 + 100 && mouse.y > 330 && mouse.y < 380 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                net.CreateRoom(hostRoomCode, seekingTime, headStartTimer); 
+                state = GameState::WAITING_ROOM; 
+                statusMessage = "Waiting for player...";
             }
-            DrawText(statusMessage.c_str(), SCREEN_WIDTH/2 - 150, 450, 20, RED);
+            DrawText(statusMessage.c_str(), SCREEN_WIDTH/2 - 150, 420, 20, RED);
             if (IsKeyPressed(KEY_ESCAPE)) state = GameState::MAIN_HUB;
         }
         else if (state == GameState::JOIN_SETUP) {
@@ -357,27 +363,78 @@ int main() {
         }
         else if (state == GameState::ROLE_REVEAL) {
             revealTimer -= dt;
-            const char* roleText = (net.myRole == 0) ? "YOU ARE THE HIDER" : "YOU ARE THE HUNTER";
+            const char* roleText = (net.myRole == 0) ? "YOU ARE THE HIDER (BLUE)" : "YOU ARE THE HUNTER (RED)";
             Color roleColor = (net.myRole == 0) ? BLUE : RED;
-            DrawText(roleText, SCREEN_WIDTH/2 - 200, SCREEN_HEIGHT/2 - 50, 60, roleColor);
-            DrawText(TextFormat("Starts in: %.1f", revealTimer), SCREEN_WIDTH/2 - 100, SCREEN_HEIGHT/2 + 50, 30, WHITE);
-            if (revealTimer <= 0) { state = (net.myRole == 0) ? GameState::HIDING_PHASE : GameState::SEEKING_PHASE; localPlayer.position = {100, 100}; opponentPlayer.position = {100, 100}; opponentPlayer.targetPos = {100, 100}; }
+            DrawText(roleText, SCREEN_WIDTH/2 - 250, SCREEN_HEIGHT/2 - 50, 50, roleColor);
+            DrawText("The Hider is INVISIBLE to the Hunter!", SCREEN_WIDTH/2 - 220, SCREEN_HEIGHT/2 + 20, 20, GRAY);
+            DrawText(TextFormat("Starts in: %.1f", revealTimer), SCREEN_WIDTH/2 - 100, SCREEN_HEIGHT/2 + 60, 30, WHITE);
+            if (revealTimer <= 0) { 
+                state = GameState::HIDING_PHASE; 
+                localPlayer.position = {100, 100}; 
+                opponentPlayer.position = {1180, 620}; 
+                opponentPlayer.targetPos = {1180, 620}; 
+            }
         }
         else if (state == GameState::HIDING_PHASE || state == GameState::SEEKING_PHASE) {
-            phaseTimer -= dt;
-            Vector2 move = {0, 0};
-            if (IsKeyDown(KEY_W)) move.y -= 1;
-            if (IsKeyDown(KEY_S)) move.y += 1;
-            if (IsKeyDown(KEY_A)) move.x -= 1;
-            if (IsKeyDown(KEY_D)) move.x += 1;
-            
-            if ((IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_E)) && localPlayer.cheatCooldown <= 0) { localPlayer.cheatActive = true; localPlayer.isVisible = false; localPlayer.speed = 350.0f; localPlayer.cheatCooldown = 8.0f; }
-            if (localPlayer.cheatActive) { localPlayer.cheatCooldown -= dt; if (localPlayer.cheatCooldown <= 5.0f) { localPlayer.cheatActive = false; localPlayer.isVisible = true; localPlayer.speed = 200.0f; } } else if (localPlayer.cheatCooldown > 0) localPlayer.cheatCooldown -= dt;
-            
-            if (move.x != 0 || move.y != 0) {
-                float len = sqrtf(move.x * move.x + move.y * move.y); move.x /= len; move.y /= len;
-                Vector2 newPos = {localPlayer.position.x + move.x * localPlayer.speed * dt, localPlayer.position.y + move.y * localPlayer.speed * dt};
-                if (!CheckCollision(localPlayer, map, newPos)) localPlayer.position = newPos;
+            // FIX: Head Start Logic
+            if (currentHeadStart > 0) {
+                currentHeadStart -= dt;
+                if (currentHeadStart < 0) currentHeadStart = 0;
+                
+                // Hider can move during head start
+                if (net.myRole == 0) {
+                    Vector2 move = {0, 0};
+                    if (IsKeyDown(KEY_W)) move.y -= 1;
+                    if (IsKeyDown(KEY_S)) move.y += 1;
+                    if (IsKeyDown(KEY_A)) move.x -= 1;
+                    if (IsKeyDown(KEY_D)) move.x += 1;
+                    if (move.x != 0 || move.y != 0) {
+                        float len = sqrtf(move.x * move.x + move.y * move.y); 
+                        move.x /= len; move.y /= len;
+                        Vector2 newPos = {localPlayer.position.x + move.x * localPlayer.speed * dt, localPlayer.position.y + move.y * localPlayer.speed * dt};
+                        if (!CheckCollision(localPlayer, map, newPos)) localPlayer.position = newPos;
+                    }
+                }
+                // Hunter is FROZEN during head start
+                
+                // Draw Head Start Countdown
+                DrawText(TextFormat("HEAD START: %.1f", currentHeadStart), SCREEN_WIDTH/2 - 100, 50, 40, YELLOW);
+                if (net.myRole == 1) DrawText("WAIT FOR THE HIDER...", SCREEN_WIDTH/2 - 150, 100, 20, RED);
+                else DrawText("RUN AND HIDE!", SCREEN_WIDTH/2 - 100, 100, 20, BLUE);
+            } 
+            else {
+                // Normal Gameplay (Seeking Phase)
+                phaseTimer -= dt;
+                Vector2 move = {0, 0};
+                if (IsKeyDown(KEY_W)) move.y -= 1;
+                if (IsKeyDown(KEY_S)) move.y += 1;
+                if (IsKeyDown(KEY_A)) move.x -= 1;
+                if (IsKeyDown(KEY_D)) move.x += 1;
+                
+                if ((IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_E)) && localPlayer.cheatCooldown <= 0) { 
+                    localPlayer.cheatActive = true; localPlayer.speed = 400.0f; localPlayer.cheatCooldown = 8.0f; 
+                }
+                if (localPlayer.cheatActive) { 
+                    localPlayer.cheatCooldown -= dt; 
+                    if (localPlayer.cheatCooldown <= 5.0f) { localPlayer.cheatActive = false; localPlayer.speed = 200.0f; } 
+                } else if (localPlayer.cheatCooldown > 0) localPlayer.cheatCooldown -= dt;
+                
+                if (move.x != 0 || move.y != 0) {
+                    float len = sqrtf(move.x * move.x + move.y * move.y); 
+                    move.x /= len; move.y /= len;
+                    Vector2 newPos = {localPlayer.position.x + move.x * localPlayer.speed * dt, localPlayer.position.y + move.y * localPlayer.speed * dt};
+                    if (!CheckCollision(localPlayer, map, newPos)) localPlayer.position = newPos;
+                }
+                
+                // Catch Mechanic
+                if (net.myRole == 1) { 
+                    float dx = localPlayer.position.x - opponentPlayer.position.x;
+                    float dy = localPlayer.position.y - opponentPlayer.position.y;
+                    float dist = sqrtf(dx * dx + dy * dy);
+                    if (dist < 30.0f) { state = GameState::GAME_OVER; statusMessage = "HUNTER WINS! CAUGHT THE HIDER!"; }
+                }
+                
+                if (phaseTimer <= 0) { state = GameState::GAME_OVER; statusMessage = "HIDER WINS! SURVIVED!"; }
             }
             
             // Throttle to 5 times a second
@@ -387,20 +444,18 @@ int main() {
                 net.SendData(posMsg);
                 netSendTimer = 0.0f;
             }
-            
-            if (state == GameState::SEEKING_PHASE && phaseTimer <= 0) { state = GameState::GAME_OVER; statusMessage = "HIDER WINS!"; }
-            else if (state == GameState::HIDING_PHASE && phaseTimer <= 0) { state = GameState::SEEKING_PHASE; phaseTimer = 120.0f; }
             if (IsKeyPressed(KEY_ESCAPE)) state = GameState::PAUSED;
         }
         else if (state == GameState::PAUSED) {
             DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, ColorAlpha(BLACK, 0.8f));
             DrawText("PAUSED", SCREEN_WIDTH/2 - 80, SCREEN_HEIGHT/2 - 50, 40, WHITE);
-            if (IsKeyPressed(KEY_ESCAPE)) state = GameState::SEEKING_PHASE;
+            if (IsKeyPressed(KEY_ESCAPE)) state = GameState::HIDING_PHASE;
             if (IsKeyPressed(KEY_Q)) state = GameState::MAIN_HUB;
         }
         else if (state == GameState::GAME_OVER) {
             DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, ColorAlpha(BLACK, 0.85f));
-            DrawText(statusMessage.c_str(), SCREEN_WIDTH/2 - 150, SCREEN_HEIGHT/2 - 30, 50, GOLD);
+            DrawText(statusMessage.c_str(), SCREEN_WIDTH/2 - 250, SCREEN_HEIGHT/2 - 30, 40, GOLD);
+            DrawText("Press ENTER for Main Menu", SCREEN_WIDTH/2 - 150, SCREEN_HEIGHT/2 + 50, 20, WHITE);
             if (IsKeyPressed(KEY_ENTER)) state = GameState::MAIN_HUB;
         }
 
@@ -416,14 +471,19 @@ int main() {
                 }
             }
             
-            if (net.myRole == 0) {
-                if (localPlayer.isVisible || state == GameState::HIDING_PHASE) DrawCircleV(localPlayer.position, localPlayer.radius, BLUE);
+            if (net.myRole == 0) { 
+                DrawCircleV(localPlayer.position, localPlayer.radius, BLUE);
                 DrawCircleV(opponentPlayer.position, 15, RED); 
-            } else {
+            } else { 
                 DrawCircleV(localPlayer.position, 15, RED);
-                if (opponentPlayer.isVisible || state == GameState::HIDING_PHASE) DrawCircleV(opponentPlayer.position, 15, BLUE); 
             }
-            DrawText(TextFormat("Time: %.1f", phaseTimer), 10, 10, 20, YELLOW);
+            
+            if (currentHeadStart <= 0) {
+                DrawText(TextFormat("Time: %.1f", phaseTimer), 10, 10, 20, YELLOW);
+                if (net.myRole == 0 && localPlayer.cheatCooldown > 0) {
+                    DrawText(TextFormat("Sprint CD: %.1f", localPlayer.cheatCooldown), 10, 40, 20, localPlayer.cheatActive ? GREEN : GRAY);
+                }
+            }
         }
         EndDrawing();
     }

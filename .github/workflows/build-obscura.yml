@@ -20,7 +20,6 @@ jobs:
       - name: Set OpenSSL Path
         shell: pwsh
         run: |
-          # Dynamically find where Chocolatey installed OpenSSL
           $opensslPath = Get-ChildItem -Path "C:\Program Files", "C:\tools" -Directory -Filter "OpenSSL*" -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           if (-not $opensslPath) { $opensslPath = "C:\Program Files\OpenSSL-Win64" }
           echo "OPENSSL_ROOT_DIR=$opensslPath" >> $env:GITHUB_ENV
@@ -31,11 +30,24 @@ jobs:
       - name: Build Project
         run: cmake --build build --config Release
         
+      # FIX: Copy the required DLLs next to the .exe so it can launch
+      - name: Bundle OpenSSL DLLs
+        shell: pwsh
+        run: |
+          $binPath = Join-Path $env:OPENSSL_ROOT_DIR "bin"
+          if (Test-Path $binPath) {
+              Copy-Item -Path "$binPath\libssl-*.dll", "$binPath\libcrypto-*.dll" -Destination "build/Release/" -Force
+              Write-Host "Successfully copied OpenSSL DLLs to build/Release/"
+          } else {
+              Write-Host "Warning: Could not find OpenSSL bin directory at $binPath"
+          }
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Obscura-Windows
-          path: build/Release/Obscura.exe
+          # FIX: Changed from just the .exe to the whole folder so it includes the DLLs
+          path: build/Release/
           retention-days: 14
 
   Linux:

@@ -270,7 +270,7 @@ int main() {
     float netSendTimer = 0.0f; 
     
     // Trace / Footprint variables
-    float traceTimer = 10.0f;
+    float traceTimer = 1.0f; // FIX: Changed from 10.0f to 1.0f
     Vector2 hiderTracePos = {-1000, -1000}; 
     Vector2 lastKnownHiderPos = {-1000, -1000};
 
@@ -296,7 +296,6 @@ int main() {
                     float y = std::stof(msg.substr(comma + 1));
                     opponentPlayer.targetPos = {x, y}; 
                     
-                    // Hunter stores the real position secretly for the trace
                     if (net.myRole == 1) lastKnownHiderPos = {x, y};
                 } catch (...) {}
             }
@@ -312,7 +311,7 @@ int main() {
             traceTimer -= dt;
             if (traceTimer <= 0) {
                 hiderTracePos = lastKnownHiderPos;
-                traceTimer = 10.0f;
+                traceTimer = 1.0f; // FIX: Reset to 1.0f
             }
         }
 
@@ -417,7 +416,6 @@ int main() {
                 if (IsKeyDown(KEY_A)) move.x -= 1;
                 if (IsKeyDown(KEY_D)) move.x += 1;
                 
-                // Hunter is faster (240), Hider is normal (200)
                 float currentSpeed = (net.myRole == 1) ? 240.0f : 200.0f;
 
                 if ((IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_E)) && localPlayer.cheatCooldown <= 0 && net.myRole == 0) { 
@@ -489,14 +487,13 @@ int main() {
             } else { 
                 DrawCircleV(localPlayer.position, 15, RED);
                 
-                // FIX: Draw the 10-second Trace Footprint for the Hunter
+                // FIX: Draw the 1-second Trace Footprint for the Hunter
                 if (hiderTracePos.x > 0 && hiderTracePos.y > 0) {
-                    // Stay fully visible for 9 seconds, fade out in the last 1 second
                     float alpha = 1.0f;
-                    if (traceTimer < 1.0f) {
-                        alpha = traceTimer; 
+                    // Fade out smoothly in the last 0.2 seconds
+                    if (traceTimer < 0.2f) {
+                        alpha = traceTimer / 0.2f; 
                     }
-                    // Blue dot with low opacity (0.4)
                     Color traceColor = ColorAlpha(BLUE, alpha * 0.4f);
                     DrawCircleV(hiderTracePos, 15, traceColor);
                 }

@@ -269,8 +269,9 @@ int main() {
     float revealTimer = 3.0f;
     float netSendTimer = 0.0f; 
     
-    // Trace / Footprint variables
-    float traceTimer = 2.0f; // FIX: Changed from 1.0f to 2.0f
+    // FIX: Separated timers for Interval (10s) and Duration (2s)
+    float traceCooldown = 10.0f; 
+    float traceVisibilityTimer = 0.0f;  
     Vector2 hiderTracePos = {-1000, -1000}; 
     Vector2 lastKnownHiderPos = {-1000, -1000};
 
@@ -306,12 +307,21 @@ int main() {
         opponentPlayer.position.x += (opponentPlayer.targetPos.x - opponentPlayer.position.x) * lerpSpeed;
         opponentPlayer.position.y += (opponentPlayer.targetPos.y - opponentPlayer.position.y) * lerpSpeed;
 
-        // Update Trace Timer
+        // FIX: Trace Logic
         if (net.myRole == 1 && currentHeadStart <= 0) {
-            traceTimer -= dt;
-            if (traceTimer <= 0) {
+            // 1. Update visibility of current trace
+            if (traceVisibilityTimer > 0) {
+                traceVisibilityTimer -= dt;
+                if (traceVisibilityTimer < 0) traceVisibilityTimer = 0;
+            }
+
+            // 2. Update cooldown for next trace
+            traceCooldown -= dt;
+            if (traceCooldown <= 0) {
+                // Spawn new trace
                 hiderTracePos = lastKnownHiderPos;
-                traceTimer = 2.0f; // FIX: Reset to 2.0f
+                traceVisibilityTimer = 2.0f; // Visible for 2 seconds
+                traceCooldown = 10.0f;       // Next trace in 10 seconds
             }
         }
 
@@ -488,12 +498,9 @@ int main() {
                 DrawCircleV(localPlayer.position, 15, RED);
                 
                 // FIX: Draw the 2-second Trace Footprint for the Hunter
-                if (hiderTracePos.x > 0 && hiderTracePos.y > 0) {
-                    float alpha = 1.0f;
-                    // Fade out smoothly in the last 0.4 seconds
-                    if (traceTimer < 0.4f) {
-                        alpha = traceTimer / 0.4f; 
-                    }
+                if (hiderTracePos.x > 0 && hiderTracePos.y > 0 && traceVisibilityTimer > 0) {
+                    // Fades from 1.0 to 0.0 over the 2 seconds
+                    float alpha = traceVisibilityTimer / 2.0f; 
                     Color traceColor = ColorAlpha(BLUE, alpha * 0.4f);
                     DrawCircleV(hiderTracePos, 15, traceColor);
                 }
@@ -510,7 +517,11 @@ int main() {
                     DrawText(TextFormat("Sprint CD: %.1f", localPlayer.cheatCooldown), 10, 40, 20, localPlayer.cheatActive ? GREEN : GRAY);
                 }
                 if (net.myRole == 1) {
-                    DrawText(TextFormat("Next Trace: %.1f", traceTimer), 10, 40, 20, YELLOW);
+                    if (traceVisibilityTimer > 0) {
+                        DrawText(TextFormat("Trace visible: %.1f", traceVisibilityTimer), 10, 40, 20, YELLOW);
+                    } else {
+                        DrawText(TextFormat("Next Trace: %.1f", traceCooldown), 10, 40, 20, YELLOW);
+                    }
                 }
             }
         }

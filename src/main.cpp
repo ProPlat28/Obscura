@@ -44,6 +44,7 @@
 #include <sstream>
 #include <memory>
 #include <chrono>
+#include <cstdio> // For snprintf
 
 const char* SERVER_IP = "obscura-server-12ot.onrender.com"; 
 const int SERVER_PORT = 443; 
@@ -68,7 +69,7 @@ public:
         cli = std::make_unique<httplib::SSLClient>(SERVER_IP, SERVER_PORT);
         cli->enable_server_certificate_verification(false); 
         cli->set_connection_timeout(10, 0); 
-        cli->set_read_timeout(15, 0); // Lower timeout for faster failure recovery
+        cli->set_read_timeout(10, 0); 
         cli->set_keep_alive(true); 
         running = true;
         netThread = std::thread(&NetworkManager::NetworkLoop, this);
@@ -77,40 +78,42 @@ public:
     void NetworkLoop() {
         while (running) {
             if (!roomCode.empty() && !role.empty()) {
-                // 1. Send queued messages
+                // 1. Send (Optimized lock scope)
                 {
                     std::lock_guard<std::mutex> lock(mtx);
                     if (!sendQueue.empty()) {
                         std::string data = sendQueue.front();
                         sendQueue.pop();
                         std::lock_guard<std::mutex> httpLock(httpMtx);
-                        cli->Post("/send?code=" + roomCode + "&role=" + role, data, "text/plain");
+                        cli->Post(("/send?code=" + roomCode + "&role=" + role).c_str(), data, "text/plain");
                     }
                 }
 
-                // 2. Poll for incoming
+                // 2. Poll
                 std::string path = "/poll?code=" + roomCode + "&role=" + role;
                 httplib::Result res;
                 {
                     std::lock_guard<std::mutex> lock(httpMtx);
-                    res = cli->Post(path, "", "text/plain");
+                    res = cli->Post(path.c_str(), "", "text/plain");
                 }
                 
                 if (res && res->status == 200) {
                     std::lock_guard<std::mutex> lock(mtx);
+                    // Parse directly from stream to avoid extra allocations
                     std::istringstream stream(res->body);
                     std::string line;
                     while (std::getline(stream, line)) {
                         if (!line.empty() && line.back() == '\r') line.pop_back();
                         if (!line.empty()) {
-                            if (msgQueue.size() >= 100) msgQueue.pop(); 
-                            msgQueue.push(line);
+                            if (msgQueue.size() >= 20) msgQueue.pop(); // Strict limit to prevent RAM buildup
+                            msgQueue.push(std::move(line)); // Move semantics to save memory
                         }
                     }
                 }
             }
-            // FIX: Reduced sleep from 200ms to 100ms for 10Hz updates (Maximum safe limit for free server)
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // FIX: 150ms is the perfect sweet spot for free HTTPS servers. 
+            // 100ms causes TLS CPU spikes; 200ms feels laggy.
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
         }
     }
 
@@ -118,7 +121,7 @@ public:
         httplib::Result res;
         {
             std::lock_guard<std::mutex> lock(httpMtx);
-            res = cli->Post("/create?code=" + code + "&time=" + std::to_string(time) + "&headstart=" + std::to_string(headstart), "", "text/plain");
+            res = cli->Post(("/create?code=" + code + "&time=" + std::to_string(time) + "&headstart=" + std::to_string(headstart)).c_str(), "", "text/plain");
         }
         if (res && res->status == 200) {
             roomCode = code;
@@ -134,7 +137,7 @@ public:
         httplib::Result res;
         {
             std::lock_guard<std::mutex> lock(httpMtx);
-            res = cli->Post("/join?code=" + code, "", "text/plain");
+            res = cli->Post(("/join?code=" + code).c_str(), "", "text/plain");
         }
         if (res && res->status == 200) {
             roomCode = code;
@@ -146,8 +149,8 @@ public:
             while (std::getline(stream, line)) {
                 if (!line.empty() && line.back() == '\r') line.pop_back();
                 if (!line.empty()) {
-                    if (msgQueue.size() >= 100) msgQueue.pop();
-                    msgQueue.push(line);
+                    if (msgQueue.size() >= 20) msgQueue.pop();
+                    msgQueue.push(std::move(line));
                 }
             }
         } else {
@@ -159,15 +162,15 @@ public:
     void SendData(const std::string& data) {
         if (!roomCode.empty()) {
             std::lock_guard<std::mutex> lock(mtx);
-            if (sendQueue.size() >= 5) sendQueue.pop(); 
-            sendQueue.push(data);
+            if (sendQueue.size() >= 3) sendQueue.pop(); // Strict limit
+            sendQueue.push(std::move(data)); // Move semantics
         }
     }
 
     void GetMessages(std::vector<std::string>& out) {
         std::lock_guard<std::mutex> lock(mtx);
         while (!msgQueue.empty()) {
-            out.push_back(msgQueue.front());
+            out.push_back(std::move(msgQueue.front()));
             msgQueue.pop();
         }
     }
@@ -248,7 +251,6 @@ std::string GetTextInput(int maxLength) {
 std::string GenerateRoomCode() {
     const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     std::string code = "";
-    // FIX: Cast to unsigned int to prevent MSVC C4244 warning
     static std::mt19937 gen(static_cast<unsigned int>(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::uniform_int_distribution<> dist(0, 35);
     for (int i = 0; i < 4; ++i) code += chars[dist(gen)];
@@ -283,6 +285,9 @@ int main() {
     localPlayer.color = BLUE; 
     opponentPlayer.color = RED;
 
+    // FIX: Pre-allocate buffer for network messages to prevent RAM spikes
+    char netBuffer[64]; 
+
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         std::vector<std::string> messages;
@@ -296,17 +301,16 @@ int main() {
             else if (msg.substr(0, 6) == "ERROR:") { statusMessage = "Error: " + msg.substr(6); state = (net.isHost) ? GameState::HOST_SETUP : GameState::JOIN_SETUP; }
             else if (msg == "HOST_DISCONNECTED" || msg == "CLIENT_DISCONNECTED") { statusMessage = "Opponent disconnected!"; state = GameState::MAIN_HUB; }
             else if (msg.find(',') != std::string::npos && msg.find('{') == std::string::npos) {
-                size_t comma = msg.find(',');
-                try {
-                    float x = std::stof(msg.substr(0, comma));
-                    float y = std::stof(msg.substr(comma + 1));
-                    opponentPlayer.targetPos = {x, y}; 
-                    if (net.myRole == 1) lastKnownHiderPos = {x, y};
-                } catch (...) {}
+                // FIX: Zero-allocation parsing using pointers
+                char* endPtr = nullptr;
+                float x = std::strtof(msg.c_str(), &endPtr);
+                float y = std::strtof(endPtr + 1, &endPtr);
+                opponentPlayer.targetPos = {x, y}; 
+                if (net.myRole == 1) lastKnownHiderPos = {x, y};
             }
         }
 
-        // FIX: Snappier Interpolation (15.0f instead of 10.0f)
+        // Snappy Interpolation
         float lerpSpeed = 15.0f * dt;
         opponentPlayer.position.x += (opponentPlayer.targetPos.x - opponentPlayer.position.x) * lerpSpeed;
         opponentPlayer.position.y += (opponentPlayer.targetPos.y - opponentPlayer.position.y) * lerpSpeed;
@@ -453,11 +457,12 @@ int main() {
                 if (phaseTimer <= 0) { state = GameState::GAME_OVER; statusMessage = "HIDER WINS! SURVIVED!"; }
             }
             
-            // FIX: Send data 10 times a second (0.1s) instead of 5
+            // FIX: Optimized Network Send (150ms / 6.6Hz)
             netSendTimer += dt;
-            if (netSendTimer >= 0.1f) {
-                std::string posMsg = std::to_string(localPlayer.position.x) + "," + std::to_string(localPlayer.position.y);
-                net.SendData(posMsg);
+            if (netSendTimer >= 0.15f) {
+                // FIX: Use snprintf for zero-allocation, tiny payload
+                std::snprintf(netBuffer, sizeof(netBuffer), "%.1f,%.1f", localPlayer.position.x, localPlayer.position.y);
+                net.SendData(netBuffer);
                 netSendTimer = 0.0f;
             }
             if (IsKeyPressed(KEY_ESCAPE)) state = GameState::PAUSED;

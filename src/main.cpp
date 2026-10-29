@@ -83,7 +83,6 @@ public:
                 std::string pathBase = "/send?code=" + roomCode + "&role=" + role;
                 std::string pollPath = "/poll?code=" + roomCode + "&role=" + role;
                 
-                // 1. Send ONLY the latest position (prevents queue buildup)
                 std::string dataToSend;
                 {
                     std::lock_guard<std::mutex> sendLock(mtx);
@@ -98,7 +97,6 @@ public:
                     cli->Post(pathBase.c_str(), dataToSend, "text/plain");
                 }
 
-                // 2. Poll for messages
                 {
                     std::lock_guard<std::mutex> httpLock(httpMtx);
                     httplib::Result res = cli->Post(pollPath.c_str(), "", "text/plain");
@@ -118,7 +116,6 @@ public:
                 }
             }
             
-            // 3. Adaptive Sleep: Ensure exactly 100ms cycle (10Hz) regardless of server lag
             auto cycleEnd = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(cycleEnd - cycleStart).count();
             if (elapsed < 100) {
@@ -170,7 +167,7 @@ public:
     void SendData(const std::string& data) {
         if (!roomCode.empty()) {
             std::lock_guard<std::mutex> queueLock(mtx);
-            if (!sendQueue.empty()) sendQueue.pop(); // FIX: Keep ONLY the latest position
+            if (!sendQueue.empty()) sendQueue.pop(); 
             sendQueue.push(std::move(data));
         }
     }
@@ -296,14 +293,12 @@ int main() {
     opponentPlayer.color = RED;
 
     char netBuffer[64]; 
-    
-    // FIX: Move vector outside loop to reuse memory and prevent allocation stutter
     std::vector<std::string> messages; 
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         
-        messages.clear(); // Reuse existing allocation
+        messages.clear(); 
         net.GetMessages(messages);
 
         for (const std::string& msg : messages) {
@@ -328,9 +323,7 @@ int main() {
                     opponentPlayer.targetPos = {x, y}; 
                     if (net.myRole == 1) lastKnownHiderPos = {x, y};
                 }
-            } catch (...) {
-                // Ignore malformed messages
-            }
+            } catch (...) {}
         }
 
         float lerpSpeed = 15.0f * dt;
@@ -479,7 +472,7 @@ int main() {
             }
             
             netSendTimer += dt;
-            if (netSendTimer >= 0.1f) { // Send at 10Hz
+            if (netSendTimer >= 0.1f) { 
                 std::snprintf(netBuffer, sizeof(netBuffer), "%.1f,%.1f", localPlayer.position.x, localPlayer.position.y);
                 net.SendData(netBuffer);
                 netSendTimer = 0.0f;
@@ -511,15 +504,21 @@ int main() {
                 }
             }
             
+            // FIX: Clear rendering logic for both roles
             if (net.myRole == 0) { 
+                // Hider sees themselves (Blue) and the Hunter (Red)
                 DrawCircleV(localPlayer.position, localPlayer.radius, BLUE);
                 DrawCircleV(opponentPlayer.position, 15, RED); 
             } else { 
+                // Hunter sees themselves (Red) and the Trace (Yellow)
                 DrawCircleV(localPlayer.position, 15, RED);
+                
+                // Draw the highly visible Yellow Trace
                 if (hiderTracePos.x > 0 && hiderTracePos.y > 0 && traceVisibilityTimer > 0) {
                     float alpha = traceVisibilityTimer / 2.0f; 
-                    Color traceColor = ColorAlpha(BLUE, alpha * 0.4f);
-                    DrawCircleV(hiderTracePos, 15, traceColor);
+                    // Yellow trace that fades out smoothly
+                    Color traceColor = ColorAlpha(YELLOW, alpha);
+                    DrawCircleV(hiderTracePos, 12, traceColor);
                 }
             }
             

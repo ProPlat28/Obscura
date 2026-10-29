@@ -270,7 +270,7 @@ int main() {
     float netSendTimer = 0.0f; 
     
     // Trace / Footprint variables
-    float traceTimer = 1.0f; // FIX: Changed from 10.0f to 1.0f
+    float traceTimer = 2.0f; // FIX: Changed from 1.0f to 2.0f
     Vector2 hiderTracePos = {-1000, -1000}; 
     Vector2 lastKnownHiderPos = {-1000, -1000};
 
@@ -311,7 +311,7 @@ int main() {
             traceTimer -= dt;
             if (traceTimer <= 0) {
                 hiderTracePos = lastKnownHiderPos;
-                traceTimer = 1.0f; // FIX: Reset to 1.0f
+                traceTimer = 2.0f; // FIX: Reset to 2.0f
             }
         }
 
@@ -487,12 +487,12 @@ int main() {
             } else { 
                 DrawCircleV(localPlayer.position, 15, RED);
                 
-                // FIX: Draw the 1-second Trace Footprint for the Hunter
+                // FIX: Draw the 2-second Trace Footprint for the Hunter
                 if (hiderTracePos.x > 0 && hiderTracePos.y > 0) {
                     float alpha = 1.0f;
-                    // Fade out smoothly in the last 0.2 seconds
-                    if (traceTimer < 0.2f) {
-                        alpha = traceTimer / 0.2f; 
+                    // Fade out smoothly in the last 0.4 seconds
+                    if (traceTimer < 0.4f) {
+                        alpha = traceTimer / 0.4f; 
                     }
                     Color traceColor = ColorAlpha(BLUE, alpha * 0.4f);
                     DrawCircleV(hiderTracePos, 15, traceColor);

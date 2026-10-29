@@ -243,7 +243,7 @@ std::string GetTextInput(int maxLength) {
 std::string GenerateRoomCode() {
     const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     std::string code = "";
-    static std::mt19937 gen(std::chrono::steady_clock::now().time_since_epoch().count());
+    static std::mt19937 gen(static_cast<unsigned int>(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::uniform_int_distribution<> dist(0, 35);
     for (int i = 0; i < 4; ++i) code += chars[dist(gen)];
     return code;

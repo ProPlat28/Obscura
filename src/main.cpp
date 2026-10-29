@@ -67,15 +67,17 @@ public:
     void Init() {
         cli = std::make_unique<httplib::SSLClient>(SERVER_IP, SERVER_PORT);
         cli->enable_server_certificate_verification(false); 
-        cli->set_connection_timeout(10, 0); 
-        cli->set_read_timeout(20, 0); 
+        cli->set_connection_timeout(15, 0); 
+        cli->set_read_timeout(25, 0); 
         cli->set_keep_alive(true); 
         running = true;
+        // Start thread immediately, but it will sleep until roomCode is set
         netThread = std::thread(&NetworkManager::NetworkLoop, this);
     }
 
     void NetworkLoop() {
         while (running) {
+            // FIX: Only poll/send if we have successfully joined/created a room
             if (!roomCode.empty() && !role.empty()) {
                 {
                     std::lock_guard<std::mutex> lock(mtx);
@@ -110,30 +112,34 @@ public:
     }
 
     void CreateRoom(const std::string& code, int time, int headstart) {
-        roomCode = code;
-        role = "host";
-        isHost = true;
         httplib::Result res;
         {
             std::lock_guard<std::mutex> lock(httpMtx);
             res = cli->Post("/create?code=" + code + "&time=" + std::to_string(time) + "&headstart=" + std::to_string(headstart), "", "text/plain");
         }
-        if (!res || res->status != 200) {
+        // FIX: Only set roomCode and role AFTER the server confirms creation
+        if (res && res->status == 200) {
+            roomCode = code;
+            role = "host";
+            isHost = true;
+        } else {
             std::lock_guard<std::mutex> lock(mtx);
             msgQueue.push("ERROR:Failed to create room");
         }
     }
 
     void JoinRoom(const std::string& code) {
-        roomCode = code;
-        role = "client";
-        isHost = false;
         httplib::Result res;
         {
             std::lock_guard<std::mutex> lock(httpMtx);
             res = cli->Post("/join?code=" + code, "", "text/plain");
         }
+        // FIX: Only set roomCode and role AFTER the server confirms the join
         if (res && res->status == 200) {
+            roomCode = code;
+            role = "client";
+            isHost = false;
+            
             std::lock_guard<std::mutex> lock(mtx);
             std::istringstream stream(res->body);
             std::string line;
@@ -260,10 +266,8 @@ int main() {
     Player localPlayer, opponentPlayer;
     
     std::string username = "", roomCodeInput = "", hostRoomCode = "", statusMessage = "";
-    
-    // FIX: New Configurable Timers
-    int headStartTimer = 10; // Default 10 seconds head start
-    int seekingTime = 120;   // Default 120 seconds to find the hider
+    int headStartTimer = 10; 
+    int seekingTime = 120;   
     
     float currentHeadStart = 0.0f;
     float phaseTimer = 0.0f;
@@ -295,7 +299,6 @@ int main() {
             }
         }
 
-        // Smooth Interpolation
         float lerpSpeed = 10.0f * dt;
         opponentPlayer.position.x += (opponentPlayer.targetPos.x - opponentPlayer.position.x) * lerpSpeed;
         opponentPlayer.position.y += (opponentPlayer.targetPos.y - opponentPlayer.position.y) * lerpSpeed;
@@ -322,17 +325,12 @@ int main() {
         else if (state == GameState::HOST_SETUP) {
             DrawText("HOST GAME", SCREEN_WIDTH/2 - 120, 100, 40, WHITE);
             DrawText(TextFormat("Room Code: %s", hostRoomCode.c_str()), SCREEN_WIDTH/2 - 100, 160, 50, YELLOW);
-            
-            // FIX: Head Start Timer UI
             DrawText(TextFormat("Head Start: %d sec (LEFT/RIGHT)", headStartTimer), SCREEN_WIDTH/2 - 180, 240, 20, GREEN);
             if (IsKeyPressed(KEY_LEFT)) headStartTimer = std::max(0, headStartTimer - 5);
             if (IsKeyPressed(KEY_RIGHT)) headStartTimer = std::min(60, headStartTimer + 5);
-            
-            // FIX: Seeking Time UI
             DrawText(TextFormat("Seeking Time: %d sec (UP/DOWN)", seekingTime), SCREEN_WIDTH/2 - 180, 280, 20, YELLOW);
             if (IsKeyPressed(KEY_UP)) seekingTime = std::min(300, seekingTime + 10);
             if (IsKeyPressed(KEY_DOWN)) seekingTime = std::max(30, seekingTime - 10);
-            
             DrawRectangle(SCREEN_WIDTH/2 - 100, 330, 200, 50, GREEN); DrawText("START WAITING", SCREEN_WIDTH/2 - 90, 345, 20, WHITE);
             Vector2 mouse = GetMousePosition();
             if (mouse.x > SCREEN_WIDTH/2 - 100 && mouse.x < SCREEN_WIDTH/2 + 100 && mouse.y > 330 && mouse.y < 380 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
@@ -352,7 +350,11 @@ int main() {
             if (IsKeyPressed(KEY_BACKSPACE) && !roomCodeInput.empty()) roomCodeInput.pop_back();
             if (roomCodeInput.length() > 4) roomCodeInput = roomCodeInput.substr(0, 4);
             DrawText(roomCodeInput.c_str(), SCREEN_WIDTH/2 - 50, 260, 50, GREEN);
-            if (IsKeyPressed(KEY_ENTER) && roomCodeInput.length() == 4) { net.JoinRoom(roomCodeInput); state = GameState::WAITING_ROOM; statusMessage = "Joining room..."; }
+            if (IsKeyPressed(KEY_ENTER) && roomCodeInput.length() == 4) { 
+                net.JoinRoom(roomCodeInput); 
+                state = GameState::WAITING_ROOM; 
+                statusMessage = "Joining room..."; 
+            }
             DrawText(statusMessage.c_str(), SCREEN_WIDTH/2 - 150, 350, 20, RED);
             if (IsKeyPressed(KEY_ESCAPE)) state = GameState::MAIN_HUB;
         }
@@ -376,12 +378,10 @@ int main() {
             }
         }
         else if (state == GameState::HIDING_PHASE || state == GameState::SEEKING_PHASE) {
-            // FIX: Head Start Logic
             if (currentHeadStart > 0) {
                 currentHeadStart -= dt;
                 if (currentHeadStart < 0) currentHeadStart = 0;
                 
-                // Hider can move during head start
                 if (net.myRole == 0) {
                     Vector2 move = {0, 0};
                     if (IsKeyDown(KEY_W)) move.y -= 1;
@@ -395,15 +395,11 @@ int main() {
                         if (!CheckCollision(localPlayer, map, newPos)) localPlayer.position = newPos;
                     }
                 }
-                // Hunter is FROZEN during head start
-                
-                // Draw Head Start Countdown
                 DrawText(TextFormat("HEAD START: %.1f", currentHeadStart), SCREEN_WIDTH/2 - 100, 50, 40, YELLOW);
                 if (net.myRole == 1) DrawText("WAIT FOR THE HIDER...", SCREEN_WIDTH/2 - 150, 100, 20, RED);
                 else DrawText("RUN AND HIDE!", SCREEN_WIDTH/2 - 100, 100, 20, BLUE);
             } 
             else {
-                // Normal Gameplay (Seeking Phase)
                 phaseTimer -= dt;
                 Vector2 move = {0, 0};
                 if (IsKeyDown(KEY_W)) move.y -= 1;
@@ -426,7 +422,6 @@ int main() {
                     if (!CheckCollision(localPlayer, map, newPos)) localPlayer.position = newPos;
                 }
                 
-                // Catch Mechanic
                 if (net.myRole == 1) { 
                     float dx = localPlayer.position.x - opponentPlayer.position.x;
                     float dy = localPlayer.position.y - opponentPlayer.position.y;
@@ -437,7 +432,6 @@ int main() {
                 if (phaseTimer <= 0) { state = GameState::GAME_OVER; statusMessage = "HIDER WINS! SURVIVED!"; }
             }
             
-            // Throttle to 5 times a second
             netSendTimer += dt;
             if (netSendTimer >= 0.2f) {
                 std::string posMsg = std::to_string(localPlayer.position.x) + "," + std::to_string(localPlayer.position.y);

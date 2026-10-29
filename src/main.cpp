@@ -67,8 +67,8 @@ public:
     void Init() {
         cli = std::make_unique<httplib::SSLClient>(SERVER_IP, SERVER_PORT);
         cli->enable_server_certificate_verification(false); 
-        cli->set_connection_timeout(15, 0); 
-        cli->set_read_timeout(25, 0); 
+        cli->set_connection_timeout(10, 0); 
+        cli->set_read_timeout(15, 0); // Lower timeout for faster failure recovery
         cli->set_keep_alive(true); 
         running = true;
         netThread = std::thread(&NetworkManager::NetworkLoop, this);
@@ -77,6 +77,7 @@ public:
     void NetworkLoop() {
         while (running) {
             if (!roomCode.empty() && !role.empty()) {
+                // 1. Send queued messages
                 {
                     std::lock_guard<std::mutex> lock(mtx);
                     if (!sendQueue.empty()) {
@@ -86,12 +87,15 @@ public:
                         cli->Post("/send?code=" + roomCode + "&role=" + role, data, "text/plain");
                     }
                 }
+
+                // 2. Poll for incoming
                 std::string path = "/poll?code=" + roomCode + "&role=" + role;
                 httplib::Result res;
                 {
                     std::lock_guard<std::mutex> lock(httpMtx);
                     res = cli->Post(path, "", "text/plain");
                 }
+                
                 if (res && res->status == 200) {
                     std::lock_guard<std::mutex> lock(mtx);
                     std::istringstream stream(res->body);
@@ -105,7 +109,8 @@ public:
                     }
                 }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            // FIX: Reduced sleep from 200ms to 100ms for 10Hz updates (Maximum safe limit for free server)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 
@@ -243,6 +248,7 @@ std::string GetTextInput(int maxLength) {
 std::string GenerateRoomCode() {
     const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     std::string code = "";
+    // FIX: Cast to unsigned int to prevent MSVC C4244 warning
     static std::mt19937 gen(static_cast<unsigned int>(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::uniform_int_distribution<> dist(0, 35);
     for (int i = 0; i < 4; ++i) code += chars[dist(gen)];
@@ -269,7 +275,6 @@ int main() {
     float revealTimer = 3.0f;
     float netSendTimer = 0.0f; 
     
-    // FIX: Separated timers for Interval (10s) and Duration (2s)
     float traceCooldown = 10.0f; 
     float traceVisibilityTimer = 0.0f;  
     Vector2 hiderTracePos = {-1000, -1000}; 
@@ -296,32 +301,27 @@ int main() {
                     float x = std::stof(msg.substr(0, comma));
                     float y = std::stof(msg.substr(comma + 1));
                     opponentPlayer.targetPos = {x, y}; 
-                    
                     if (net.myRole == 1) lastKnownHiderPos = {x, y};
                 } catch (...) {}
             }
         }
 
-        // Smooth Interpolation
-        float lerpSpeed = 10.0f * dt;
+        // FIX: Snappier Interpolation (15.0f instead of 10.0f)
+        float lerpSpeed = 15.0f * dt;
         opponentPlayer.position.x += (opponentPlayer.targetPos.x - opponentPlayer.position.x) * lerpSpeed;
         opponentPlayer.position.y += (opponentPlayer.targetPos.y - opponentPlayer.position.y) * lerpSpeed;
 
-        // FIX: Trace Logic
+        // Trace Logic
         if (net.myRole == 1 && currentHeadStart <= 0) {
-            // 1. Update visibility of current trace
             if (traceVisibilityTimer > 0) {
                 traceVisibilityTimer -= dt;
                 if (traceVisibilityTimer < 0) traceVisibilityTimer = 0;
             }
-
-            // 2. Update cooldown for next trace
             traceCooldown -= dt;
             if (traceCooldown <= 0) {
-                // Spawn new trace
                 hiderTracePos = lastKnownHiderPos;
-                traceVisibilityTimer = 2.0f; // Visible for 2 seconds
-                traceCooldown = 10.0f;       // Next trace in 10 seconds
+                traceVisibilityTimer = 2.0f; 
+                traceCooldown = 10.0f;       
             }
         }
 
@@ -453,8 +453,9 @@ int main() {
                 if (phaseTimer <= 0) { state = GameState::GAME_OVER; statusMessage = "HIDER WINS! SURVIVED!"; }
             }
             
+            // FIX: Send data 10 times a second (0.1s) instead of 5
             netSendTimer += dt;
-            if (netSendTimer >= 0.2f) {
+            if (netSendTimer >= 0.1f) {
                 std::string posMsg = std::to_string(localPlayer.position.x) + "," + std::to_string(localPlayer.position.y);
                 net.SendData(posMsg);
                 netSendTimer = 0.0f;
@@ -474,14 +475,10 @@ int main() {
             if (IsKeyPressed(KEY_ENTER)) state = GameState::MAIN_HUB;
         }
 
-        // ==========================================
-        // RENDERING
-        // ==========================================
         BeginDrawing();
         ClearBackground(BLACK);
         
         if (state >= GameState::HIDING_PHASE) {
-            // 1. Draw Map Walls
             if (!map.walls.empty()) {
                 for (int r = 0; r < MAP_ROWS; ++r) {
                     for (int c = 0; c < MAP_COLS; ++c) {
@@ -490,23 +487,18 @@ int main() {
                 }
             }
             
-            // 2. Draw Players & Traces
             if (net.myRole == 0) { 
                 DrawCircleV(localPlayer.position, localPlayer.radius, BLUE);
                 DrawCircleV(opponentPlayer.position, 15, RED); 
             } else { 
                 DrawCircleV(localPlayer.position, 15, RED);
-                
-                // FIX: Draw the 2-second Trace Footprint for the Hunter
                 if (hiderTracePos.x > 0 && hiderTracePos.y > 0 && traceVisibilityTimer > 0) {
-                    // Fades from 1.0 to 0.0 over the 2 seconds
                     float alpha = traceVisibilityTimer / 2.0f; 
                     Color traceColor = ColorAlpha(BLUE, alpha * 0.4f);
                     DrawCircleV(hiderTracePos, 15, traceColor);
                 }
             }
             
-            // 3. Draw UI Text (Top Layer)
             if (currentHeadStart > 0) {
                 DrawText(TextFormat("HEAD START: %.1f", currentHeadStart), SCREEN_WIDTH/2 - 100, 50, 40, YELLOW);
                 if (net.myRole == 1) DrawText("WAIT FOR THE HIDER...", SCREEN_WIDTH/2 - 150, 100, 20, RED);

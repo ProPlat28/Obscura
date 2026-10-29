@@ -46,15 +46,14 @@
 #include <chrono>
 
 const char* SERVER_IP = "obscura-server-12ot.onrender.com"; 
-// Port 443 is the standard port for HTTPS
 const int SERVER_PORT = 443; 
 
 class NetworkManager {
 public:
-    // Changed to SSLClient for HTTPS
     std::unique_ptr<httplib::SSLClient> cli;
     std::thread netThread;
-    std::mutex mtx;
+    std::mutex mtx;       
+    std::mutex httpMtx;   
     std::queue<std::string> msgQueue;
     
     bool isHost = false;
@@ -65,14 +64,11 @@ public:
     bool running = false;
 
     void Init() {
-        // Initialize SSL Client
         cli = std::make_unique<httplib::SSLClient>(SERVER_IP, SERVER_PORT);
-        
-        // Disable strict certificate verification for free Render certs to prevent connection drops
         cli->enable_server_certificate_verification(false); 
-        
         cli->set_connection_timeout(15, 0); 
         cli->set_read_timeout(60, 0); 
+        cli->set_keep_alive(true); // Keep connection open to save RAM/CPU
         
         running = true;
         netThread = std::thread(&NetworkManager::NetworkLoop, this);
@@ -82,7 +78,12 @@ public:
         while (running) {
             if (!roomCode.empty() && !role.empty()) {
                 std::string path = "/poll?code=" + roomCode + "&role=" + role;
-                auto res = cli->Post(path, "", "text/plain");
+                httplib::Result res;
+                
+                {
+                    std::lock_guard<std::mutex> lock(httpMtx);
+                    res = cli->Post(path, "", "text/plain");
+                }
                 
                 if (res && res->status == 200) {
                     std::lock_guard<std::mutex> lock(mtx);
@@ -102,7 +103,12 @@ public:
         roomCode = code;
         role = "host";
         isHost = true;
-        auto res = cli->Post("/create?code=" + code + "&time=" + std::to_string(time), "", "text/plain");
+        
+        httplib::Result res;
+        {
+            std::lock_guard<std::mutex> lock(httpMtx);
+            res = cli->Post("/create?code=" + code + "&time=" + std::to_string(time), "", "text/plain");
+        }
         if (!res || res->status != 200) {
             std::lock_guard<std::mutex> lock(mtx);
             msgQueue.push("ERROR:Failed to create room");
@@ -113,7 +119,12 @@ public:
         roomCode = code;
         role = "client";
         isHost = false;
-        auto res = cli->Post("/join?code=" + code, "", "text/plain");
+        
+        httplib::Result res;
+        {
+            std::lock_guard<std::mutex> lock(httpMtx);
+            res = cli->Post("/join?code=" + code, "", "text/plain");
+        }
         if (res && res->status == 200) {
             std::lock_guard<std::mutex> lock(mtx);
             std::istringstream stream(res->body);
@@ -130,6 +141,7 @@ public:
 
     void SendData(const std::string& data) {
         if (!roomCode.empty()) {
+            std::lock_guard<std::mutex> lock(httpMtx);
             cli->Post("/send?code=" + roomCode + "&role=" + role, data, "text/plain");
         }
     }
@@ -236,6 +248,10 @@ int main() {
     std::string username = "", roomCodeInput = "", hostRoomCode = "", statusMessage = "";
     int lobbyTimer = 60;
     float revealTimer = 3.0f, phaseTimer = 0.0f;
+    
+    // FIX: Timer to throttle network updates to 10 times per second
+    float netSendTimer = 0.0f; 
+    
     localPlayer.color = BLUE; 
     opponentPlayer.color = RED;
 
@@ -265,12 +281,14 @@ int main() {
                 statusMessage = "Opponent disconnected!";
                 state = GameState::MAIN_HUB;
             }
-            else if (msg.substr(0, 5) == "DATA:") {
-                size_t xPos = msg.find("\"x\":");
-                size_t yPos = msg.find("\"y\":");
-                if (xPos != std::string::npos && yPos != std::string::npos) {
-                    opponentPlayer.position = {std::stof(msg.substr(xPos + 4)), std::stof(msg.substr(yPos + 4))};
-                }
+            // FIX: Parse the new lightweight "x,y" format
+            else if (msg.find(',') != std::string::npos && msg.find('{') == std::string::npos) {
+                size_t comma = msg.find(',');
+                try {
+                    float x = std::stof(msg.substr(0, comma));
+                    float y = std::stof(msg.substr(comma + 1));
+                    opponentPlayer.position = {x, y};
+                } catch (...) {}
             }
         }
 
@@ -395,7 +413,14 @@ int main() {
                 }
             }
             
-            net.SendData("{\"type\":4,\"x\":" + std::to_string(localPlayer.position.x) + ",\"y\":" + std::to_string(localPlayer.position.y) + "}");
+            // FIX: Only send position data 10 times a second to save RAM/CPU
+            netSendTimer += dt;
+            if (netSendTimer >= 0.1f) {
+                // Send lightweight "x,y" instead of heavy JSON
+                std::string posMsg = std::to_string(localPlayer.position.x) + "," + std::to_string(localPlayer.position.y);
+                net.SendData(posMsg);
+                netSendTimer = 0.0f;
+            }
             
             if (state == GameState::SEEKING_PHASE && phaseTimer <= 0) { 
                 state = GameState::GAME_OVER; 

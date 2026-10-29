@@ -14,13 +14,19 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         
-      - name: Install OpenSSL
+      - name: Install OpenSSL (Fast via Chocolatey)
+        run: choco install openssl -y
+
+      - name: Set OpenSSL Path
+        shell: pwsh
         run: |
-          C:\vcpkg\vcpkg.exe install openssl:x64-windows
-          C:\vcpkg\vcpkg.exe integrate install
+          # Dynamically find where Chocolatey installed OpenSSL
+          $opensslPath = Get-ChildItem -Path "C:\Program Files", "C:\tools" -Directory -Filter "OpenSSL*" -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $opensslPath) { $opensslPath = "C:\Program Files\OpenSSL-Win64" }
+          echo "OPENSSL_ROOT_DIR=$opensslPath" >> $env:GITHUB_ENV
 
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
         
       - name: Build Project
         run: cmake --build build --config Release

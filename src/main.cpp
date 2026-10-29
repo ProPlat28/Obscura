@@ -68,8 +68,8 @@ public:
     void Init() {
         cli = std::make_unique<httplib::SSLClient>(SERVER_IP, SERVER_PORT);
         cli->enable_server_certificate_verification(false); 
-        cli->set_connection_timeout(5, 0);  // Fast fail
-        cli->set_read_timeout(5, 0);        // Fast fail
+        cli->set_connection_timeout(5, 0);  
+        cli->set_read_timeout(5, 0);        
         cli->set_keep_alive(true); 
         running = true;
         netThread = std::thread(&NetworkManager::NetworkLoop, this);
@@ -77,27 +77,34 @@ public:
 
     void NetworkLoop() {
         while (running) {
+            auto cycleStart = std::chrono::steady_clock::now();
+            
             if (!roomCode.empty() && !role.empty()) {
-                // 1. Send
+                std::string pathBase = "/send?code=" + roomCode + "&role=" + role;
+                std::string pollPath = "/poll?code=" + roomCode + "&role=" + role;
+                
+                // 1. Send ONLY the latest position (prevents queue buildup)
+                std::string dataToSend;
                 {
-                    std::lock_guard<std::mutex> lock(mtx);
+                    std::lock_guard<std::mutex> sendLock(mtx);
                     if (!sendQueue.empty()) {
-                        std::string data = sendQueue.front();
+                        dataToSend = std::move(sendQueue.front());
                         sendQueue.pop();
-                        std::lock_guard<std::mutex> httpLock(httpMtx);
-                        std::string path = "/send?code=" + roomCode + "&role=" + role;
-                        cli->Post(path.c_str(), data, "text/plain");
                     }
                 }
+                
+                if (!dataToSend.empty()) {
+                    std::lock_guard<std::mutex> httpLock(httpMtx);
+                    cli->Post(pathBase.c_str(), dataToSend, "text/plain");
+                }
 
-                // 2. Poll
+                // 2. Poll for messages
                 {
                     std::lock_guard<std::mutex> httpLock(httpMtx);
-                    std::string path = "/poll?code=" + roomCode + "&role=" + role;
-                    httplib::Result res = cli->Post(path.c_str(), "", "text/plain");
+                    httplib::Result res = cli->Post(pollPath.c_str(), "", "text/plain");
                     
                     if (res && res->status == 200) {
-                        std::lock_guard<std::mutex> lock(mtx);
+                        std::lock_guard<std::mutex> recvLock(mtx);
                         std::istringstream stream(res->body);
                         std::string line;
                         while (std::getline(stream, line)) {
@@ -110,13 +117,18 @@ public:
                     }
                 }
             }
-            // 200ms is the sweet spot for free HTTPS servers
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            
+            // 3. Adaptive Sleep: Ensure exactly 100ms cycle (10Hz) regardless of server lag
+            auto cycleEnd = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(cycleEnd - cycleStart).count();
+            if (elapsed < 100) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100 - elapsed));
+            }
         }
     }
 
     void CreateRoom(const std::string& code, int time, int headstart) {
-        std::lock_guard<std::mutex> lock(httpMtx);
+        std::lock_guard<std::mutex> httpLock(httpMtx);
         std::string path = "/create?code=" + code + "&time=" + std::to_string(time) + "&headstart=" + std::to_string(headstart);
         httplib::Result res = cli->Post(path.c_str(), "", "text/plain");
         
@@ -125,13 +137,13 @@ public:
             role = "host";
             isHost = true;
         } else {
-            std::lock_guard<std::mutex> lock(mtx);
+            std::lock_guard<std::mutex> queueLock(mtx);
             msgQueue.push("ERROR:Failed to create room");
         }
     }
 
     void JoinRoom(const std::string& code) {
-        std::lock_guard<std::mutex> lock(httpMtx);
+        std::lock_guard<std::mutex> httpLock(httpMtx);
         std::string path = "/join?code=" + code;
         httplib::Result res = cli->Post(path.c_str(), "", "text/plain");
         
@@ -139,7 +151,7 @@ public:
             roomCode = code;
             role = "client";
             isHost = false;
-            std::lock_guard<std::mutex> lock(mtx);
+            std::lock_guard<std::mutex> queueLock(mtx);
             std::istringstream stream(res->body);
             std::string line;
             while (std::getline(stream, line)) {
@@ -150,21 +162,21 @@ public:
                 }
             }
         } else {
-            std::lock_guard<std::mutex> lock(mtx);
+            std::lock_guard<std::mutex> queueLock(mtx);
             msgQueue.push("ERROR:Failed to join room. Check code.");
         }
     }
 
     void SendData(const std::string& data) {
         if (!roomCode.empty()) {
-            std::lock_guard<std::mutex> lock(mtx);
-            if (sendQueue.size() >= 3) sendQueue.pop();
+            std::lock_guard<std::mutex> queueLock(mtx);
+            if (!sendQueue.empty()) sendQueue.pop(); // FIX: Keep ONLY the latest position
             sendQueue.push(std::move(data));
         }
     }
 
     void GetMessages(std::vector<std::string>& out) {
-        std::lock_guard<std::mutex> lock(mtx);
+        std::lock_guard<std::mutex> queueLock(mtx);
         while (!msgQueue.empty()) {
             out.push_back(std::move(msgQueue.front()));
             msgQueue.pop();
@@ -174,7 +186,7 @@ public:
     void Close() {
         running = false;
         if (netThread.joinable()) {
-            netThread.join(); // Wait for thread to finish safely
+            netThread.join(); 
         }
     }
 };
@@ -284,13 +296,16 @@ int main() {
     opponentPlayer.color = RED;
 
     char netBuffer[64]; 
+    
+    // FIX: Move vector outside loop to reuse memory and prevent allocation stutter
+    std::vector<std::string> messages; 
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
-        std::vector<std::string> messages;
+        
+        messages.clear(); // Reuse existing allocation
         net.GetMessages(messages);
 
-        // FIX: Crash-proof message parsing with try-catch and size checks
         for (const std::string& msg : messages) {
             try {
                 if (msg.size() >= 5 && msg.substr(0, 5) == "ROLE:") {
@@ -314,16 +329,14 @@ int main() {
                     if (net.myRole == 1) lastKnownHiderPos = {x, y};
                 }
             } catch (...) {
-                // Ignore malformed messages to prevent crashes
+                // Ignore malformed messages
             }
         }
 
-        // Snappy Interpolation
         float lerpSpeed = 15.0f * dt;
         opponentPlayer.position.x += (opponentPlayer.targetPos.x - opponentPlayer.position.x) * lerpSpeed;
         opponentPlayer.position.y += (opponentPlayer.targetPos.y - opponentPlayer.position.y) * lerpSpeed;
 
-        // Trace Logic
         if (net.myRole == 1 && currentHeadStart <= 0) {
             if (traceVisibilityTimer > 0) {
                 traceVisibilityTimer -= dt;
@@ -465,9 +478,8 @@ int main() {
                 if (phaseTimer <= 0) { state = GameState::GAME_OVER; statusMessage = "HIDER WINS! SURVIVED!"; }
             }
             
-            // Optimized Network Send (200ms)
             netSendTimer += dt;
-            if (netSendTimer >= 0.2f) {
+            if (netSendTimer >= 0.1f) { // Send at 10Hz
                 std::snprintf(netBuffer, sizeof(netBuffer), "%.1f,%.1f", localPlayer.position.x, localPlayer.position.y);
                 net.SendData(netBuffer);
                 netSendTimer = 0.0f;
@@ -532,7 +544,6 @@ int main() {
         EndDrawing();
     }
     
-    // FIX: Clean shutdown to prevent crashes
     net.Close();
     CloseWindow();
     return 0;

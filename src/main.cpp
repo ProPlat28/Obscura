@@ -55,7 +55,7 @@ public:
     std::mutex mtx;       
     std::mutex httpMtx;   
     std::queue<std::string> msgQueue;
-    std::queue<std::string> sendQueue; // Queue for outgoing messages
+    std::queue<std::string> sendQueue;
     
     bool isHost = false;
     std::string roomCode = "";
@@ -68,7 +68,7 @@ public:
         cli = std::make_unique<httplib::SSLClient>(SERVER_IP, SERVER_PORT);
         cli->enable_server_certificate_verification(false); 
         cli->set_connection_timeout(10, 0); 
-        cli->set_read_timeout(20, 0); // Lower timeout to prevent freezing
+        cli->set_read_timeout(20, 0); 
         cli->set_keep_alive(true); 
         
         running = true;
@@ -78,7 +78,7 @@ public:
     void NetworkLoop() {
         while (running) {
             if (!roomCode.empty() && !role.empty()) {
-                // 1. Send any queued outgoing messages first
+                // 1. Send queued messages
                 {
                     std::lock_guard<std::mutex> lock(mtx);
                     if (!sendQueue.empty()) {
@@ -89,7 +89,7 @@ public:
                     }
                 }
 
-                // 2. Poll for incoming messages
+                // 2. Poll for incoming
                 std::string path = "/poll?code=" + roomCode + "&role=" + role;
                 httplib::Result res;
                 
@@ -104,11 +104,14 @@ public:
                     std::string line;
                     while (std::getline(stream, line)) {
                         if (!line.empty() && line.back() == '\r') line.pop_back();
-                        if (!line.empty()) msgQueue.push(line);
+                        if (!line.empty()) {
+                            // FIX: Limit queue size to prevent RAM spikes
+                            if (msgQueue.size() >= 100) msgQueue.pop(); 
+                            msgQueue.push(line);
+                        }
                     }
                 }
             }
-            // Poll every 200ms (5 times a second)
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
     }
@@ -145,7 +148,10 @@ public:
             std::string line;
             while (std::getline(stream, line)) {
                 if (!line.empty() && line.back() == '\r') line.pop_back();
-                if (!line.empty()) msgQueue.push(line);
+                if (!line.empty()) {
+                    if (msgQueue.size() >= 100) msgQueue.pop();
+                    msgQueue.push(line);
+                }
             }
         } else {
             std::lock_guard<std::mutex> lock(mtx);
@@ -153,10 +159,11 @@ public:
         }
     }
 
-    // FIX: Queue messages instead of sending immediately to prevent thread blocking
     void SendData(const std::string& data) {
         if (!roomCode.empty()) {
             std::lock_guard<std::mutex> lock(mtx);
+            // FIX: Limit queue size to prevent RAM spikes from network lag
+            if (sendQueue.size() >= 5) sendQueue.pop(); 
             sendQueue.push(data);
         }
     }
@@ -188,7 +195,7 @@ enum class GameState {
 
 struct Player {
     Vector2 position = {0, 0};
-    Vector2 targetPos = {0, 0}; // For interpolation
+    Vector2 targetPos = {0, 0}; 
     float speed = 200.0f;
     float radius = 15.0f;
     Color color = WHITE;
@@ -287,13 +294,12 @@ int main() {
                 try {
                     float x = std::stof(msg.substr(0, comma));
                     float y = std::stof(msg.substr(comma + 1));
-                    opponentPlayer.targetPos = {x, y}; // Update target position
+                    opponentPlayer.targetPos = {x, y}; 
                 } catch (...) {}
             }
         }
 
-        // FIX: Smooth Interpolation for opponent
-        // Glide the opponent towards their target position every frame
+        // Smooth Interpolation for opponent
         float lerpSpeed = 10.0f * dt;
         opponentPlayer.position.x += (opponentPlayer.targetPos.x - opponentPlayer.position.x) * lerpSpeed;
         opponentPlayer.position.y += (opponentPlayer.targetPos.y - opponentPlayer.position.y) * lerpSpeed;
@@ -374,7 +380,7 @@ int main() {
                 if (!CheckCollision(localPlayer, map, newPos)) localPlayer.position = newPos;
             }
             
-            // FIX: Throttle to 5 times a second (0.2s) to prevent server choking
+            // Throttle to 5 times a second
             netSendTimer += dt;
             if (netSendTimer >= 0.2f) {
                 std::string posMsg = std::to_string(localPlayer.position.x) + "," + std::to_string(localPlayer.position.y);
@@ -412,10 +418,10 @@ int main() {
             
             if (net.myRole == 0) {
                 if (localPlayer.isVisible || state == GameState::HIDING_PHASE) DrawCircleV(localPlayer.position, localPlayer.radius, BLUE);
-                DrawCircleV(opponentPlayer.position, 15, RED); // Uses interpolated position
+                DrawCircleV(opponentPlayer.position, 15, RED); 
             } else {
                 DrawCircleV(localPlayer.position, 15, RED);
-                if (opponentPlayer.isVisible || state == GameState::HIDING_PHASE) DrawCircleV(opponentPlayer.position, 15, BLUE); // Uses interpolated position
+                if (opponentPlayer.isVisible || state == GameState::HIDING_PHASE) DrawCircleV(opponentPlayer.position, 15, BLUE); 
             }
             DrawText(TextFormat("Time: %.1f", phaseTimer), 10, 10, 20, YELLOW);
         }

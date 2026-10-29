@@ -71,13 +71,11 @@ public:
         cli->set_read_timeout(25, 0); 
         cli->set_keep_alive(true); 
         running = true;
-        // Start thread immediately, but it will sleep until roomCode is set
         netThread = std::thread(&NetworkManager::NetworkLoop, this);
     }
 
     void NetworkLoop() {
         while (running) {
-            // FIX: Only poll/send if we have successfully joined/created a room
             if (!roomCode.empty() && !role.empty()) {
                 {
                     std::lock_guard<std::mutex> lock(mtx);
@@ -117,7 +115,6 @@ public:
             std::lock_guard<std::mutex> lock(httpMtx);
             res = cli->Post("/create?code=" + code + "&time=" + std::to_string(time) + "&headstart=" + std::to_string(headstart), "", "text/plain");
         }
-        // FIX: Only set roomCode and role AFTER the server confirms creation
         if (res && res->status == 200) {
             roomCode = code;
             role = "host";
@@ -134,12 +131,10 @@ public:
             std::lock_guard<std::mutex> lock(httpMtx);
             res = cli->Post("/join?code=" + code, "", "text/plain");
         }
-        // FIX: Only set roomCode and role AFTER the server confirms the join
         if (res && res->status == 200) {
             roomCode = code;
             role = "client";
             isHost = false;
-            
             std::lock_guard<std::mutex> lock(mtx);
             std::istringstream stream(res->body);
             std::string line;
@@ -274,6 +269,11 @@ int main() {
     float revealTimer = 3.0f;
     float netSendTimer = 0.0f; 
     
+    // Trace / Footprint variables
+    float traceTimer = 10.0f;
+    Vector2 hiderTracePos = {-1000, -1000}; 
+    Vector2 lastKnownHiderPos = {-1000, -1000};
+
     localPlayer.color = BLUE; 
     opponentPlayer.color = RED;
 
@@ -295,13 +295,26 @@ int main() {
                     float x = std::stof(msg.substr(0, comma));
                     float y = std::stof(msg.substr(comma + 1));
                     opponentPlayer.targetPos = {x, y}; 
+                    
+                    // Hunter stores the real position secretly for the trace
+                    if (net.myRole == 1) lastKnownHiderPos = {x, y};
                 } catch (...) {}
             }
         }
 
+        // Smooth Interpolation
         float lerpSpeed = 10.0f * dt;
         opponentPlayer.position.x += (opponentPlayer.targetPos.x - opponentPlayer.position.x) * lerpSpeed;
         opponentPlayer.position.y += (opponentPlayer.targetPos.y - opponentPlayer.position.y) * lerpSpeed;
+
+        // Update Trace Timer
+        if (net.myRole == 1 && currentHeadStart <= 0) {
+            traceTimer -= dt;
+            if (traceTimer <= 0) {
+                hiderTracePos = lastKnownHiderPos;
+                traceTimer = 10.0f;
+            }
+        }
 
         if (state == GameState::USERNAME_INPUT) {
             DrawText("ONLINE MODE", SCREEN_WIDTH/2 - 120, 150, 40, GREEN);
@@ -395,9 +408,6 @@ int main() {
                         if (!CheckCollision(localPlayer, map, newPos)) localPlayer.position = newPos;
                     }
                 }
-                DrawText(TextFormat("HEAD START: %.1f", currentHeadStart), SCREEN_WIDTH/2 - 100, 50, 40, YELLOW);
-                if (net.myRole == 1) DrawText("WAIT FOR THE HIDER...", SCREEN_WIDTH/2 - 150, 100, 20, RED);
-                else DrawText("RUN AND HIDE!", SCREEN_WIDTH/2 - 100, 100, 20, BLUE);
             } 
             else {
                 phaseTimer -= dt;
@@ -407,18 +417,21 @@ int main() {
                 if (IsKeyDown(KEY_A)) move.x -= 1;
                 if (IsKeyDown(KEY_D)) move.x += 1;
                 
-                if ((IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_E)) && localPlayer.cheatCooldown <= 0) { 
-                    localPlayer.cheatActive = true; localPlayer.speed = 400.0f; localPlayer.cheatCooldown = 8.0f; 
+                // Hunter is faster (240), Hider is normal (200)
+                float currentSpeed = (net.myRole == 1) ? 240.0f : 200.0f;
+
+                if ((IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_E)) && localPlayer.cheatCooldown <= 0 && net.myRole == 0) { 
+                    localPlayer.cheatActive = true; currentSpeed = 400.0f; localPlayer.cheatCooldown = 8.0f; 
                 }
                 if (localPlayer.cheatActive) { 
                     localPlayer.cheatCooldown -= dt; 
-                    if (localPlayer.cheatCooldown <= 5.0f) { localPlayer.cheatActive = false; localPlayer.speed = 200.0f; } 
+                    if (localPlayer.cheatCooldown <= 5.0f) { localPlayer.cheatActive = false; currentSpeed = 200.0f; } 
                 } else if (localPlayer.cheatCooldown > 0) localPlayer.cheatCooldown -= dt;
                 
                 if (move.x != 0 || move.y != 0) {
                     float len = sqrtf(move.x * move.x + move.y * move.y); 
                     move.x /= len; move.y /= len;
-                    Vector2 newPos = {localPlayer.position.x + move.x * localPlayer.speed * dt, localPlayer.position.y + move.y * localPlayer.speed * dt};
+                    Vector2 newPos = {localPlayer.position.x + move.x * currentSpeed * dt, localPlayer.position.y + move.y * currentSpeed * dt};
                     if (!CheckCollision(localPlayer, map, newPos)) localPlayer.position = newPos;
                 }
                 
@@ -453,10 +466,14 @@ int main() {
             if (IsKeyPressed(KEY_ENTER)) state = GameState::MAIN_HUB;
         }
 
+        // ==========================================
+        // RENDERING
+        // ==========================================
         BeginDrawing();
         ClearBackground(BLACK);
         
         if (state >= GameState::HIDING_PHASE) {
+            // 1. Draw Map Walls
             if (!map.walls.empty()) {
                 for (int r = 0; r < MAP_ROWS; ++r) {
                     for (int c = 0; c < MAP_COLS; ++c) {
@@ -465,17 +482,38 @@ int main() {
                 }
             }
             
+            // 2. Draw Players & Traces
             if (net.myRole == 0) { 
                 DrawCircleV(localPlayer.position, localPlayer.radius, BLUE);
                 DrawCircleV(opponentPlayer.position, 15, RED); 
             } else { 
                 DrawCircleV(localPlayer.position, 15, RED);
+                
+                // FIX: Draw the 10-second Trace Footprint for the Hunter
+                if (hiderTracePos.x > 0 && hiderTracePos.y > 0) {
+                    // Stay fully visible for 9 seconds, fade out in the last 1 second
+                    float alpha = 1.0f;
+                    if (traceTimer < 1.0f) {
+                        alpha = traceTimer; 
+                    }
+                    // Blue dot with low opacity (0.4)
+                    Color traceColor = ColorAlpha(BLUE, alpha * 0.4f);
+                    DrawCircleV(hiderTracePos, 15, traceColor);
+                }
             }
             
-            if (currentHeadStart <= 0) {
+            // 3. Draw UI Text (Top Layer)
+            if (currentHeadStart > 0) {
+                DrawText(TextFormat("HEAD START: %.1f", currentHeadStart), SCREEN_WIDTH/2 - 100, 50, 40, YELLOW);
+                if (net.myRole == 1) DrawText("WAIT FOR THE HIDER...", SCREEN_WIDTH/2 - 150, 100, 20, RED);
+                else DrawText("RUN AND HIDE!", SCREEN_WIDTH/2 - 100, 100, 20, BLUE);
+            } else {
                 DrawText(TextFormat("Time: %.1f", phaseTimer), 10, 10, 20, YELLOW);
                 if (net.myRole == 0 && localPlayer.cheatCooldown > 0) {
                     DrawText(TextFormat("Sprint CD: %.1f", localPlayer.cheatCooldown), 10, 40, 20, localPlayer.cheatActive ? GREEN : GRAY);
+                }
+                if (net.myRole == 1) {
+                    DrawText(TextFormat("Next Trace: %.1f", traceTimer), 10, 40, 20, YELLOW);
                 }
             }
         }

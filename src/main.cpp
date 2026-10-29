@@ -55,6 +55,7 @@ public:
     std::mutex mtx;       
     std::mutex httpMtx;   
     std::queue<std::string> msgQueue;
+    std::queue<std::string> sendQueue; // Queue for outgoing messages
     
     bool isHost = false;
     std::string roomCode = "";
@@ -66,9 +67,9 @@ public:
     void Init() {
         cli = std::make_unique<httplib::SSLClient>(SERVER_IP, SERVER_PORT);
         cli->enable_server_certificate_verification(false); 
-        cli->set_connection_timeout(15, 0); 
-        cli->set_read_timeout(60, 0); 
-        cli->set_keep_alive(true); // Keep connection open to save RAM/CPU
+        cli->set_connection_timeout(10, 0); 
+        cli->set_read_timeout(20, 0); // Lower timeout to prevent freezing
+        cli->set_keep_alive(true); 
         
         running = true;
         netThread = std::thread(&NetworkManager::NetworkLoop, this);
@@ -77,6 +78,18 @@ public:
     void NetworkLoop() {
         while (running) {
             if (!roomCode.empty() && !role.empty()) {
+                // 1. Send any queued outgoing messages first
+                {
+                    std::lock_guard<std::mutex> lock(mtx);
+                    if (!sendQueue.empty()) {
+                        std::string data = sendQueue.front();
+                        sendQueue.pop();
+                        std::lock_guard<std::mutex> httpLock(httpMtx);
+                        cli->Post("/send?code=" + roomCode + "&role=" + role, data, "text/plain");
+                    }
+                }
+
+                // 2. Poll for incoming messages
                 std::string path = "/poll?code=" + roomCode + "&role=" + role;
                 httplib::Result res;
                 
@@ -95,7 +108,8 @@ public:
                     }
                 }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            // Poll every 200ms (5 times a second)
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
     }
 
@@ -139,10 +153,11 @@ public:
         }
     }
 
+    // FIX: Queue messages instead of sending immediately to prevent thread blocking
     void SendData(const std::string& data) {
         if (!roomCode.empty()) {
-            std::lock_guard<std::mutex> lock(httpMtx);
-            cli->Post("/send?code=" + roomCode + "&role=" + role, data, "text/plain");
+            std::lock_guard<std::mutex> lock(mtx);
+            sendQueue.push(data);
         }
     }
 
@@ -173,6 +188,7 @@ enum class GameState {
 
 struct Player {
     Vector2 position = {0, 0};
+    Vector2 targetPos = {0, 0}; // For interpolation
     float speed = 200.0f;
     float radius = 15.0f;
     Color color = WHITE;
@@ -230,7 +246,9 @@ std::string GetTextInput(int maxLength) {
 std::string GenerateRoomCode() {
     const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     std::string code = "";
-    for (int i = 0; i < 4; ++i) code += chars[std::rand() % 36];
+    static std::mt19937 gen(std::chrono::steady_clock::now().time_since_epoch().count());
+    std::uniform_int_distribution<> dist(0, 35);
+    for (int i = 0; i < 4; ++i) code += chars[dist(gen)];
     return code;
 }
 
@@ -248,8 +266,6 @@ int main() {
     std::string username = "", roomCodeInput = "", hostRoomCode = "", statusMessage = "";
     int lobbyTimer = 60;
     float revealTimer = 3.0f, phaseTimer = 0.0f;
-    
-    // FIX: Timer to throttle network updates to 10 times per second
     float netSendTimer = 0.0f; 
     
     localPlayer.color = BLUE; 
@@ -261,36 +277,26 @@ int main() {
         net.GetMessages(messages);
 
         for (const std::string& msg : messages) {
-            if (msg.substr(0, 5) == "ROLE:") {
-                net.myRole = std::stoi(msg.substr(5));
-            }
-            else if (msg.substr(0, 6) == "TIMER:") {
-                lobbyTimer = std::stoi(msg.substr(6));
-                phaseTimer = static_cast<float>(lobbyTimer);
-            }
-            else if (msg == "START") {
-                map.Generate();
-                state = GameState::ROLE_REVEAL;
-                revealTimer = 3.0f;
-            }
-            else if (msg.substr(0, 6) == "ERROR:") {
-                statusMessage = "Error: " + msg.substr(6);
-                state = (net.isHost) ? GameState::HOST_SETUP : GameState::JOIN_SETUP;
-            }
-            else if (msg == "HOST_DISCONNECTED" || msg == "CLIENT_DISCONNECTED") {
-                statusMessage = "Opponent disconnected!";
-                state = GameState::MAIN_HUB;
-            }
-            // FIX: Parse the new lightweight "x,y" format
+            if (msg.substr(0, 5) == "ROLE:") net.myRole = std::stoi(msg.substr(5));
+            else if (msg.substr(0, 6) == "TIMER:") { lobbyTimer = std::stoi(msg.substr(6)); phaseTimer = static_cast<float>(lobbyTimer); }
+            else if (msg == "START") { map.Generate(); state = GameState::ROLE_REVEAL; revealTimer = 3.0f; }
+            else if (msg.substr(0, 6) == "ERROR:") { statusMessage = "Error: " + msg.substr(6); state = (net.isHost) ? GameState::HOST_SETUP : GameState::JOIN_SETUP; }
+            else if (msg == "HOST_DISCONNECTED" || msg == "CLIENT_DISCONNECTED") { statusMessage = "Opponent disconnected!"; state = GameState::MAIN_HUB; }
             else if (msg.find(',') != std::string::npos && msg.find('{') == std::string::npos) {
                 size_t comma = msg.find(',');
                 try {
                     float x = std::stof(msg.substr(0, comma));
                     float y = std::stof(msg.substr(comma + 1));
-                    opponentPlayer.position = {x, y};
+                    opponentPlayer.targetPos = {x, y}; // Update target position
                 } catch (...) {}
             }
         }
+
+        // FIX: Smooth Interpolation for opponent
+        // Glide the opponent towards their target position every frame
+        float lerpSpeed = 10.0f * dt;
+        opponentPlayer.position.x += (opponentPlayer.targetPos.x - opponentPlayer.position.x) * lerpSpeed;
+        opponentPlayer.position.y += (opponentPlayer.targetPos.y - opponentPlayer.position.y) * lerpSpeed;
 
         if (state == GameState::USERNAME_INPUT) {
             DrawText("ONLINE MODE", SCREEN_WIDTH/2 - 120, 150, 40, GREEN);
@@ -299,27 +305,16 @@ int main() {
             std::string input = GetTextInput(15);
             if (!input.empty()) username += input;
             if (IsKeyPressed(KEY_BACKSPACE) && !username.empty()) username.pop_back();
-            if (IsKeyPressed(KEY_ENTER) && !username.empty()) { 
-                net.myName = username; 
-                state = GameState::MAIN_HUB; 
-            }
+            if (IsKeyPressed(KEY_ENTER) && !username.empty()) { net.myName = username; state = GameState::MAIN_HUB; }
         }
         else if (state == GameState::MAIN_HUB) {
             DrawText("MAIN HUB", SCREEN_WIDTH/2 - 100, 150, 50, WHITE);
-            DrawRectangle(SCREEN_WIDTH/2 - 150, 300, 300, 60, DARKGREEN); 
-            DrawText("HOST GAME", SCREEN_WIDTH/2 - 90, 320, 30, WHITE);
-            DrawRectangle(SCREEN_WIDTH/2 - 150, 400, 300, 60, DARKBLUE); 
-            DrawText("JOIN GAME", SCREEN_WIDTH/2 - 90, 420, 30, WHITE);
-            
+            DrawRectangle(SCREEN_WIDTH/2 - 150, 300, 300, 60, DARKGREEN); DrawText("HOST GAME", SCREEN_WIDTH/2 - 90, 320, 30, WHITE);
+            DrawRectangle(SCREEN_WIDTH/2 - 150, 400, 300, 60, DARKBLUE); DrawText("JOIN GAME", SCREEN_WIDTH/2 - 90, 420, 30, WHITE);
             Vector2 mouse = GetMousePosition();
             if (mouse.x > SCREEN_WIDTH/2 - 150 && mouse.x < SCREEN_WIDTH/2 + 150) {
-                if (mouse.y > 300 && mouse.y < 360 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) { 
-                    hostRoomCode = GenerateRoomCode(); 
-                    state = GameState::HOST_SETUP; 
-                }
-                if (mouse.y > 400 && mouse.y < 460 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                    state = GameState::JOIN_SETUP;
-                }
+                if (mouse.y > 300 && mouse.y < 360 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) { hostRoomCode = GenerateRoomCode(); state = GameState::HOST_SETUP; }
+                if (mouse.y > 400 && mouse.y < 460 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) state = GameState::JOIN_SETUP;
             }
         }
         else if (state == GameState::HOST_SETUP) {
@@ -328,15 +323,10 @@ int main() {
             DrawText(TextFormat("Timer: %d (UP/DOWN)", lobbyTimer), SCREEN_WIDTH/2 - 120, 300, 20, YELLOW);
             if (IsKeyDown(KEY_UP)) lobbyTimer = std::min(180, lobbyTimer + 1);
             if (IsKeyDown(KEY_DOWN)) lobbyTimer = std::max(10, lobbyTimer - 1);
-            
-            DrawRectangle(SCREEN_WIDTH/2 - 100, 350, 200, 50, GREEN); 
-            DrawText("START WAITING", SCREEN_WIDTH/2 - 90, 365, 20, WHITE);
-            
+            DrawRectangle(SCREEN_WIDTH/2 - 100, 350, 200, 50, GREEN); DrawText("START WAITING", SCREEN_WIDTH/2 - 90, 365, 20, WHITE);
             Vector2 mouse = GetMousePosition();
             if (mouse.x > SCREEN_WIDTH/2 - 100 && mouse.x < SCREEN_WIDTH/2 + 100 && mouse.y > 350 && mouse.y < 400 && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                net.CreateRoom(hostRoomCode, lobbyTimer); 
-                state = GameState::WAITING_ROOM; 
-                statusMessage = "Waiting for player...";
+                net.CreateRoom(hostRoomCode, lobbyTimer); state = GameState::WAITING_ROOM; statusMessage = "Waiting for player...";
             }
             DrawText(statusMessage.c_str(), SCREEN_WIDTH/2 - 150, 450, 20, RED);
             if (IsKeyPressed(KEY_ESCAPE)) state = GameState::MAIN_HUB;
@@ -345,19 +335,12 @@ int main() {
             DrawText("JOIN GAME", SCREEN_WIDTH/2 - 120, 150, 40, WHITE);
             DrawText("Enter Room Code:", SCREEN_WIDTH/2 - 100, 220, 20, WHITE);
             std::string input = GetTextInput(4);
-            for (char& c : input) {
-                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-            }
+            for (char& c : input) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             if (!input.empty()) roomCodeInput += input;
             if (IsKeyPressed(KEY_BACKSPACE) && !roomCodeInput.empty()) roomCodeInput.pop_back();
             if (roomCodeInput.length() > 4) roomCodeInput = roomCodeInput.substr(0, 4);
-            
             DrawText(roomCodeInput.c_str(), SCREEN_WIDTH/2 - 50, 260, 50, GREEN);
-            if (IsKeyPressed(KEY_ENTER) && roomCodeInput.length() == 4) {
-                net.JoinRoom(roomCodeInput); 
-                state = GameState::WAITING_ROOM; 
-                statusMessage = "Joining room...";
-            }
+            if (IsKeyPressed(KEY_ENTER) && roomCodeInput.length() == 4) { net.JoinRoom(roomCodeInput); state = GameState::WAITING_ROOM; statusMessage = "Joining room..."; }
             DrawText(statusMessage.c_str(), SCREEN_WIDTH/2 - 150, 350, 20, RED);
             if (IsKeyPressed(KEY_ESCAPE)) state = GameState::MAIN_HUB;
         }
@@ -372,64 +355,35 @@ int main() {
             Color roleColor = (net.myRole == 0) ? BLUE : RED;
             DrawText(roleText, SCREEN_WIDTH/2 - 200, SCREEN_HEIGHT/2 - 50, 60, roleColor);
             DrawText(TextFormat("Starts in: %.1f", revealTimer), SCREEN_WIDTH/2 - 100, SCREEN_HEIGHT/2 + 50, 30, WHITE);
-            if (revealTimer <= 0) { 
-                state = (net.myRole == 0) ? GameState::HIDING_PHASE : GameState::SEEKING_PHASE; 
-                localPlayer.position = {100, 100}; 
-            }
+            if (revealTimer <= 0) { state = (net.myRole == 0) ? GameState::HIDING_PHASE : GameState::SEEKING_PHASE; localPlayer.position = {100, 100}; opponentPlayer.position = {100, 100}; opponentPlayer.targetPos = {100, 100}; }
         }
         else if (state == GameState::HIDING_PHASE || state == GameState::SEEKING_PHASE) {
             phaseTimer -= dt;
             Vector2 move = {0, 0};
-            
             if (IsKeyDown(KEY_W)) move.y -= 1;
             if (IsKeyDown(KEY_S)) move.y += 1;
             if (IsKeyDown(KEY_A)) move.x -= 1;
             if (IsKeyDown(KEY_D)) move.x += 1;
             
-            if ((IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_E)) && localPlayer.cheatCooldown <= 0) { 
-                localPlayer.cheatActive = true; 
-                localPlayer.isVisible = false; 
-                localPlayer.speed = 350.0f; 
-                localPlayer.cheatCooldown = 8.0f; 
-            }
-            if (localPlayer.cheatActive) { 
-                localPlayer.cheatCooldown -= dt; 
-                if (localPlayer.cheatCooldown <= 5.0f) { 
-                    localPlayer.cheatActive = false; 
-                    localPlayer.isVisible = true; 
-                    localPlayer.speed = 200.0f; 
-                } 
-            } else if (localPlayer.cheatCooldown > 0) {
-                localPlayer.cheatCooldown -= dt; 
-            }
+            if ((IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_E)) && localPlayer.cheatCooldown <= 0) { localPlayer.cheatActive = true; localPlayer.isVisible = false; localPlayer.speed = 350.0f; localPlayer.cheatCooldown = 8.0f; }
+            if (localPlayer.cheatActive) { localPlayer.cheatCooldown -= dt; if (localPlayer.cheatCooldown <= 5.0f) { localPlayer.cheatActive = false; localPlayer.isVisible = true; localPlayer.speed = 200.0f; } } else if (localPlayer.cheatCooldown > 0) localPlayer.cheatCooldown -= dt;
             
             if (move.x != 0 || move.y != 0) {
-                float len = sqrtf(move.x * move.x + move.y * move.y); 
-                move.x /= len; 
-                move.y /= len;
+                float len = sqrtf(move.x * move.x + move.y * move.y); move.x /= len; move.y /= len;
                 Vector2 newPos = {localPlayer.position.x + move.x * localPlayer.speed * dt, localPlayer.position.y + move.y * localPlayer.speed * dt};
-                if (!CheckCollision(localPlayer, map, newPos)) {
-                    localPlayer.position = newPos;
-                }
+                if (!CheckCollision(localPlayer, map, newPos)) localPlayer.position = newPos;
             }
             
-            // FIX: Only send position data 10 times a second to save RAM/CPU
+            // FIX: Throttle to 5 times a second (0.2s) to prevent server choking
             netSendTimer += dt;
-            if (netSendTimer >= 0.1f) {
-                // Send lightweight "x,y" instead of heavy JSON
+            if (netSendTimer >= 0.2f) {
                 std::string posMsg = std::to_string(localPlayer.position.x) + "," + std::to_string(localPlayer.position.y);
                 net.SendData(posMsg);
                 netSendTimer = 0.0f;
             }
             
-            if (state == GameState::SEEKING_PHASE && phaseTimer <= 0) { 
-                state = GameState::GAME_OVER; 
-                statusMessage = "HIDER WINS!"; 
-            }
-            else if (state == GameState::HIDING_PHASE && phaseTimer <= 0) { 
-                state = GameState::SEEKING_PHASE; 
-                phaseTimer = 120.0f; 
-            }
+            if (state == GameState::SEEKING_PHASE && phaseTimer <= 0) { state = GameState::GAME_OVER; statusMessage = "HIDER WINS!"; }
+            else if (state == GameState::HIDING_PHASE && phaseTimer <= 0) { state = GameState::SEEKING_PHASE; phaseTimer = 120.0f; }
             if (IsKeyPressed(KEY_ESCAPE)) state = GameState::PAUSED;
         }
         else if (state == GameState::PAUSED) {
@@ -451,30 +405,22 @@ int main() {
             if (!map.walls.empty()) {
                 for (int r = 0; r < MAP_ROWS; ++r) {
                     for (int c = 0; c < MAP_COLS; ++c) {
-                        if (map.walls[r][c]) {
-                            DrawRectangle(c * TILE_SIZE, r * TILE_SIZE, TILE_SIZE, TILE_SIZE, DARKGRAY);
-                        }
+                        if (map.walls[r][c]) DrawRectangle(c * TILE_SIZE, r * TILE_SIZE, TILE_SIZE, TILE_SIZE, DARKGRAY);
                     }
                 }
             }
             
             if (net.myRole == 0) {
-                if (localPlayer.isVisible || state == GameState::HIDING_PHASE) {
-                    DrawCircleV(localPlayer.position, localPlayer.radius, BLUE);
-                }
-                DrawCircleV(opponentPlayer.position, 15, RED);
+                if (localPlayer.isVisible || state == GameState::HIDING_PHASE) DrawCircleV(localPlayer.position, localPlayer.radius, BLUE);
+                DrawCircleV(opponentPlayer.position, 15, RED); // Uses interpolated position
             } else {
                 DrawCircleV(localPlayer.position, 15, RED);
-                if (opponentPlayer.isVisible || state == GameState::HIDING_PHASE) {
-                    DrawCircleV(opponentPlayer.position, 15, BLUE);
-                }
+                if (opponentPlayer.isVisible || state == GameState::HIDING_PHASE) DrawCircleV(opponentPlayer.position, 15, BLUE); // Uses interpolated position
             }
-            
             DrawText(TextFormat("Time: %.1f", phaseTimer), 10, 10, 20, YELLOW);
         }
         EndDrawing();
     }
-    
     net.Close();
     CloseWindow();
     return 0;

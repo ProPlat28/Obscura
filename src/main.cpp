@@ -314,8 +314,14 @@ int main() {
                 } else if (msg.size() >= 6 && msg.substr(0, 6) == "ERROR:") {
                     statusMessage = "Error: " + msg.substr(6);
                     state = (net.isHost) ? GameState::HOST_SETUP : GameState::JOIN_SETUP;
-                } else if (msg == "HOST_DISCONNECTED" || msg == "CLIENT_DISCONNECTED") {
+                  else if (msg == "HOST_DISCONNECTED" || msg == "CLIENT_DISCONNECTED") {
                     statusMessage = "Opponent disconnected!"; state = GameState::MAIN_HUB;
+                    }
+                    // FIX: Listen for the Hunter's catch signal
+                    else if (msg == "CAUGHT") {
+                        state = GameState::GAME_OVER;
+                        statusMessage = "HUNTER WINS! CAUGHT THE HIDER!";
+                    }
                 } else if (msg.find(',') != std::string::npos && msg.find('{') == std::string::npos) {
                     char* endPtr = nullptr;
                     float x = std::strtof(msg.c_str(), &endPtr);
@@ -466,9 +472,11 @@ int main() {
               float dy = localPlayer.position.y - opponentPlayer.position.y;
               float dist = sqrtf(dx * dx + dy * dy);
 
-              if (dist < 30.0f) { 
+              // FIX: Only the Hunter checks the distance. If they catch the Hider, they send a signal to the server.
+              if (net.myRole == 1 && dist < 45.0f && state != GameState::GAME_OVER) { 
                   state = GameState::GAME_OVER; 
                   statusMessage = "HUNTER WINS! CAUGHT THE HIDER!"; 
+                  net.SendData("CAUGHT"); // This forces the Hider's game to end instantly!
               }
                 
                 if (phaseTimer <= 0) { state = GameState::GAME_OVER; statusMessage = "HIDER WINS! SURVIVED!"; }

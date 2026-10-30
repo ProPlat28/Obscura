@@ -314,15 +314,15 @@ int main() {
                 } else if (msg.size() >= 6 && msg.substr(0, 6) == "ERROR:") {
                     statusMessage = "Error: " + msg.substr(6);
                     state = (net.isHost) ? GameState::HOST_SETUP : GameState::JOIN_SETUP;
-                  else if (msg == "HOST_DISCONNECTED" || msg == "CLIENT_DISCONNECTED") {
+                } else if (msg == "HOST_DISCONNECTED" || msg == "CLIENT_DISCONNECTED") {
                     statusMessage = "Opponent disconnected!"; state = GameState::MAIN_HUB;
-                    }
-                    // FIX: Listen for the Hunter's catch signal
-                    else if (msg == "CAUGHT") {
-                        state = GameState::GAME_OVER;
-                        statusMessage = "HUNTER WINS! CAUGHT THE HIDER!";
-                    }
-                } else if (msg.find(',') != std::string::npos && msg.find('{') == std::string::npos) {
+                } 
+                // FIX: Listen for the Hunter's catch signal
+                else if (msg == "CAUGHT") {
+                    state = GameState::GAME_OVER;
+                    statusMessage = "HUNTER WINS! CAUGHT THE HIDER!";
+                }
+                else if (msg.find(',') != std::string::npos && msg.find('{') == std::string::npos) {
                     char* endPtr = nullptr;
                     float x = std::strtof(msg.c_str(), &endPtr);
                     float y = std::strtof(endPtr + 1, &endPtr);

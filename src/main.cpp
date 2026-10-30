@@ -461,12 +461,15 @@ int main() {
                     if (!CheckCollision(localPlayer, map, newPos)) localPlayer.position = newPos;
                 }
                 
-                if (net.myRole == 1) { 
-                    float dx = localPlayer.position.x - opponentPlayer.position.x;
-                    float dy = localPlayer.position.y - opponentPlayer.position.y;
-                    float dist = sqrtf(dx * dx + dy * dy);
-                    if (dist < 30.0f) { state = GameState::GAME_OVER; statusMessage = "HUNTER WINS! CAUGHT THE HIDER!"; }
-                }
+              // FIX: Both players check the distance so the game ends for both simultaneously
+              float dx = localPlayer.position.x - opponentPlayer.position.x;
+              float dy = localPlayer.position.y - opponentPlayer.position.y;
+              float dist = sqrtf(dx * dx + dy * dy);
+
+              if (dist < 30.0f) { 
+                  state = GameState::GAME_OVER; 
+                  statusMessage = "HUNTER WINS! CAUGHT THE HIDER!"; 
+              }
                 
                 if (phaseTimer <= 0) { state = GameState::GAME_OVER; statusMessage = "HIDER WINS! SURVIVED!"; }
             }
